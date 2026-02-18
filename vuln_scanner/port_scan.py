@@ -13,8 +13,16 @@ PORT_SERVICES = {
     80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 3306: "MySQL", 8080: "HTTP-ALT"
 }
 SENSITIVE_PATHS = ["/admin","/login","/wp-admin","/phpmyadmin","/dashboard","/.env"]
-DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
 DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS"]
+DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
+
+# Links para tutoriais seguros
+TUTORIALS = {
+    "Telnet": "https://www.ssh.com/academy/ssh/telnet-vs-ssh",
+    "HTTP Headers": "https://owasp.org/www-project-secure-headers/",
+    "Diretórios Sensíveis": "https://portswigger.net/web-security/file-path-traversal",
+    "Métodos HTTP": "https://owasp.org/www-project-top-ten/2017/A5_2017-Broken_Access_Control.html"
+}
 
 # -------------------- UTILIDADES --------------------
 def ping_host(ip):
@@ -103,10 +111,13 @@ def interpretar_banner(porta, banner):
         if "server:" in banner.lower():
             try:
                 server = banner.lower().split("server:")[1].split()[0]
-                info.append(f"Servidor web: {server}")
-            except: pass
-        if "set-cookie" in banner.lower(): info.append("Cookie de sessão detectado")
-        if not info: info.append("Serviço HTTP ativo")
+                info.append(f"Servidor web identificado: {server}")
+            except:
+                pass
+        if "set-cookie" in banner.lower():
+            info.append("Cookie de sessão detectado")
+        if not info:
+            info.append("Serviço HTTP ativo")
         return " | ".join(info)
     return "Serviço ativo (banner genérico)"
 
@@ -120,7 +131,11 @@ def scan_host(ip):
         if s.connect_ex((ip, port)) == 0:
             service = PORT_SERVICES.get(port, "Desconhecido")
             banner = grab_banner(ip, port)
-            registro = {"porta": port, "servico": service, "banner": banner}
+            registro = {
+                "porta": port,
+                "servico": service,
+                "banner": banner
+            }
             if port in [80, 8080, 443]:
                 headers = coletar_headers_http(ip, port)
                 registro["headers_http"] = headers
@@ -143,37 +158,52 @@ def calcular_score(resultados):
 def resumo_executivo(ip, resultados):
     risco = "BAIXO"
     for r in resultados:
-        if r["porta"] == 23: risco = "ALTO"; break
-        elif r["porta"] == 80: risco = "MÉDIO"
+        if r["porta"] == 23:
+            risco = "ALTO"
+            break
+        elif r["porta"] == 80:
+            risco = "MÉDIO"
     score = calcular_score(resultados)
     return risco, score
 
-# -------------------- PDF SIMPLES --------------------
+# -------------------- PDF SIMPLES PARA BUG BOUNTY --------------------
 def gerar_pdf(ip, resultados, risco, score):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.pdf"
+    data = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{data}.pdf"
+
     doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
     estilos = getSampleStyleSheet()
     elementos = []
 
-    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB & REDE</b>", estilos["Title"]))
-    elementos.append(Spacer(1,12))
+    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO BUG BOUNTY</b>", estilos["Title"]))
+    elementos.append(Spacer(1, 12))
     elementos.append(Paragraph(f"IP analisado: {ip}", estilos["Normal"]))
     elementos.append(Paragraph(f"Data: {datetime.now()}", estilos["Normal"]))
     elementos.append(Paragraph(f"Nível de risco: {risco}", estilos["Normal"]))
     elementos.append(Paragraph(f"Score geral: {score}/100", estilos["Normal"]))
-    elementos.append(Spacer(1,12))
+    elementos.append(Spacer(1, 12))
 
     for r in resultados:
-        elementos.append(Paragraph(f"<b>Porta {r['porta']} ({r['servico']})</b>", estilos["Heading2"]))
+        elementos.append(Paragraph(f"Porta {r['porta']} ({r['servico']})", estilos["Heading2"]))
         elementos.append(Paragraph(f"Banner / Info: {interpretar_banner(r['porta'], r['banner'])}", estilos["Normal"]))
+
         if r.get("diretorios_sensiveis"):
             elementos.append(Paragraph(f"Diretórios sensíveis: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
+            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['Diretórios Sensíveis']}", estilos["Normal"]))
+
         if r.get("headers_seguranca_ausentes"):
             elementos.append(Paragraph(f"Headers ausentes: {', '.join(r['headers_seguranca_ausentes'])}", estilos["Normal"]))
+            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['HTTP Headers']}", estilos["Normal"]))
+
         if r.get("metodos_http_perigosos"):
             elementos.append(Paragraph(f"Métodos HTTP perigosos: {', '.join(r['metodos_http_perigosos'])}", estilos["Normal"]))
-        elementos.append(Spacer(1,12))
+            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['Métodos HTTP']}", estilos["Normal"]))
+
+        if r["porta"] == 23:
+            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['Telnet']}", estilos["Normal"]))
+
+        elementos.append(Spacer(1, 10))
 
     doc.build(elementos)
     print(f"\n📄 PDF salvo em: {arquivo_pdf}")
@@ -187,12 +217,13 @@ if __name__ == "__main__":
 
     resultados = scan_host(alvo)
     if not resultados:
-        print("Nenhuma porta aberta encontrada.")
+        print("\nNenhuma porta aberta encontrada.")
         exit()
 
     risco, score = resumo_executivo(alvo, resultados)
     gerar_pdf(alvo, resultados, risco, score)
 
+    # Salvar JSON estruturado
     with open(f"{DOWNLOAD_DIR}/relatorio_{alvo}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.json", "w") as f:
         json.dump({
             "ip": alvo,
@@ -202,4 +233,4 @@ if __name__ == "__main__":
             "resultados": resultados
         }, f, indent=4)
 
-    print("\n✅ Relatórios gerados com sucesso no celular.")
+    print("\n✅ Relatórios prontos para bug bounty!")
