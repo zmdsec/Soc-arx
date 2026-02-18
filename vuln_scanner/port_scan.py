@@ -2,6 +2,11 @@ import socket
 import json
 from datetime import datetime
 
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+
+
 COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 8080]
 
 PORT_SERVICES = {
@@ -83,6 +88,50 @@ def resumo_executivo(alvo, resultados):
     else:
         print("Recomendação: Nenhuma ação crítica necessária.")
 
+    return risco
+
+
+def gerar_pdf(alvo, resultados, risco):
+    arquivo_pdf = f"relatorio_{alvo}.pdf"
+    doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
+
+    estilos = getSampleStyleSheet()
+    elementos = []
+
+    elementos.append(Paragraph("<b>RELATÓRIO DE AUDITORIA DE REDE</b>", estilos["Title"]))
+    elementos.append(Spacer(1, 12))
+
+    elementos.append(Paragraph(f"<b>IP analisado:</b> {alvo}", estilos["Normal"]))
+    elementos.append(Paragraph(f"<b>Data:</b> {datetime.now()}", estilos["Normal"]))
+    elementos.append(Paragraph(f"<b>Nível de risco:</b> {risco}", estilos["Normal"]))
+    elementos.append(Spacer(1, 12))
+
+    elementos.append(Paragraph("<b>Serviços Detectados</b>", estilos["Heading2"]))
+    elementos.append(Spacer(1, 8))
+
+    for r in resultados:
+        elementos.append(
+            Paragraph(
+                f"Porta {r['porta']} – {r['servico']}",
+                estilos["Normal"]
+            )
+        )
+
+    elementos.append(Spacer(1, 12))
+    elementos.append(Paragraph("<b>Recomendações</b>", estilos["Heading2"]))
+    elementos.append(Spacer(1, 8))
+
+    if risco == "ALTO":
+        elementos.append(Paragraph("Desativar o serviço Telnet imediatamente.", estilos["Normal"]))
+    elif risco == "MÉDIO":
+        elementos.append(Paragraph("Utilizar HTTPS e senha forte no painel administrativo.", estilos["Normal"]))
+    else:
+        elementos.append(Paragraph("Nenhuma ação crítica necessária no momento.", estilos["Normal"]))
+
+    doc.build(elementos)
+
+    print(f"\nRelatório PDF gerado: {arquivo_pdf}")
+
 
 if __name__ == "__main__":
     alvo = input("IP alvo: ")
@@ -92,15 +141,19 @@ if __name__ == "__main__":
         print("\nNenhuma porta aberta encontrada.")
         exit()
 
-    resumo_executivo(alvo, resultados)
+    risco = resumo_executivo(alvo, resultados)
 
-    arquivo = f"relatorio_{alvo}.json"
-
-    with open(arquivo, "w") as f:
+    # JSON
+    arquivo_json = f"relatorio_{alvo}.json"
+    with open(arquivo_json, "w") as f:
         json.dump({
             "ip": alvo,
             "data": str(datetime.now()),
+            "risco": risco,
             "resultados": resultados
         }, f, indent=4)
 
-    print(f"\nRelatório salvo em {arquivo}")
+    print(f"\nRelatório JSON salvo em {arquivo_json}")
+
+    # PDF
+    gerar_pdf(alvo, resultados, risco)
