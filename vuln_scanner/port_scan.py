@@ -1,11 +1,9 @@
 import socket
 import json
 from datetime import datetime
-
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
-
 
 COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 8080]
 
@@ -30,7 +28,7 @@ def grab_banner(ip, port):
         s.settimeout(2)
         s.connect((ip, port))
 
-        if port in [80, 8080, 443]:
+        if port in [80, 8080]:
             s.send(b"HEAD / HTTP/1.0\r\n\r\n")
 
         banner = s.recv(1024).decode(errors="ignore").strip()
@@ -66,6 +64,20 @@ def scan(ip):
     return results
 
 
+def calcular_score(resultados):
+    score = 0
+
+    for r in resultados:
+        if r["porta"] == 23:   # Telnet
+            score += 50
+        elif r["porta"] == 80: # HTTP
+            score += 20
+        else:
+            score += 5
+
+    return min(score, 100)
+
+
 def resumo_executivo(alvo, resultados):
     risco = "BAIXO"
 
@@ -76,57 +88,51 @@ def resumo_executivo(alvo, resultados):
         elif r["porta"] == 80:
             risco = "MÉDIO"
 
+    score = calcular_score(resultados)
+
     print("\n====== RESUMO EXECUTIVO ======")
     print(f"IP analisado: {alvo}")
     print(f"Portas abertas: {len(resultados)}")
     print(f"Nível de risco: {risco}")
+    print(f"Score de risco: {score}/100")
 
-    if risco == "ALTO":
-        print("Recomendação: Desativar Telnet imediatamente.")
-    elif risco == "MÉDIO":
-        print("Recomendação: Usar HTTPS e senha forte.")
-    else:
-        print("Recomendação: Nenhuma ação crítica necessária.")
-
-    return risco
+    return risco, score
 
 
-def gerar_pdf(alvo, resultados, risco):
+def gerar_pdf(alvo, resultados, risco, score):
     arquivo_pdf = f"relatorio_{alvo}.pdf"
     doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
-
-    estilos = getSampleStyleSheet()
     elementos = []
+    estilos = getSampleStyleSheet()
 
-    elementos.append(Paragraph("<b>RELATÓRIO DE AUDITORIA DE REDE</b>", estilos["Title"]))
+    elementos.append(Paragraph("<b>VULN SCANNER PRO</b>", estilos["Title"]))
     elementos.append(Spacer(1, 12))
 
-    elementos.append(Paragraph(f"<b>IP analisado:</b> {alvo}", estilos["Normal"]))
-    elementos.append(Paragraph(f"<b>Data:</b> {datetime.now()}", estilos["Normal"]))
-    elementos.append(Paragraph(f"<b>Nível de risco:</b> {risco}", estilos["Normal"]))
+    elementos.append(Paragraph(f"IP analisado: {alvo}", estilos["Normal"]))
+    elementos.append(Paragraph(f"Data: {datetime.now()}", estilos["Normal"]))
+    elementos.append(Paragraph(f"Nível de risco: {risco}", estilos["Normal"]))
+    elementos.append(Paragraph(f"Score de risco: {score}/100", estilos["Normal"]))
     elementos.append(Spacer(1, 12))
 
-    elementos.append(Paragraph("<b>Serviços Detectados</b>", estilos["Heading2"]))
+    elementos.append(Paragraph("<b>Serviços Detectados:</b>", estilos["Heading2"]))
     elementos.append(Spacer(1, 8))
 
     for r in resultados:
         elementos.append(
-            Paragraph(
-                f"Porta {r['porta']} – {r['servico']}",
-                estilos["Normal"]
-            )
+            Paragraph(f"Porta {r['porta']} - {r['servico']}", estilos["Normal"])
         )
+        elementos.append(Spacer(1, 6))
 
     elementos.append(Spacer(1, 12))
-    elementos.append(Paragraph("<b>Recomendações</b>", estilos["Heading2"]))
+    elementos.append(Paragraph("<b>Recomendações:</b>", estilos["Heading2"]))
     elementos.append(Spacer(1, 8))
 
     if risco == "ALTO":
-        elementos.append(Paragraph("Desativar o serviço Telnet imediatamente.", estilos["Normal"]))
+        elementos.append(Paragraph("Desativar Telnet imediatamente.", estilos["Normal"]))
     elif risco == "MÉDIO":
-        elementos.append(Paragraph("Utilizar HTTPS e senha forte no painel administrativo.", estilos["Normal"]))
+        elementos.append(Paragraph("Utilizar HTTPS e senha forte.", estilos["Normal"]))
     else:
-        elementos.append(Paragraph("Nenhuma ação crítica necessária no momento.", estilos["Normal"]))
+        elementos.append(Paragraph("Nenhuma ação crítica necessária.", estilos["Normal"]))
 
     doc.build(elementos)
 
@@ -141,19 +147,19 @@ if __name__ == "__main__":
         print("\nNenhuma porta aberta encontrada.")
         exit()
 
-    risco = resumo_executivo(alvo, resultados)
+    risco, score = resumo_executivo(alvo, resultados)
 
-    # JSON
-    arquivo_json = f"relatorio_{alvo}.json"
-    with open(arquivo_json, "w") as f:
+    gerar_pdf(alvo, resultados, risco, score)
+
+    arquivo = f"relatorio_{alvo}.json"
+
+    with open(arquivo, "w") as f:
         json.dump({
             "ip": alvo,
             "data": str(datetime.now()),
+            "resultados": resultados,
             "risco": risco,
-            "resultados": resultados
+            "score": score
         }, f, indent=4)
 
-    print(f"\nRelatório JSON salvo em {arquivo_json}")
-
-    # PDF
-    gerar_pdf(alvo, resultados, risco)
+    print(f"\nRelatório JSON salvo em {arquivo}")
