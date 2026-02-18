@@ -52,3 +52,22 @@ if __name__ == "__main__":
         }, f, indent=4)
 
     print(f"\nRelatório salvo em {arquivo}")
+def resumo_executivo(resultados):
+    risco = "BAIXO"
+
+    for r in resultados:
+        if r["porta"] == 23:
+            risco = "ALTO"
+            break
+        elif r["porta"] == 80:
+            risco = "MÉDIO"
+
+    print("\n====== RESUMO EXECUTIVO ======")
+    print(f"IP analisado: {alvo}")
+    print(f"Portas abertas: {len(resultados)}")
+    print(f"Nível de risco: {risco}")
+
+    if risco == "ALTO":
+        print("Recomendação: Desativar Telnet imediatamente.")
+    elif risco == "MÉDIO":
+        print("Recomendação: Usar HTTPS e senha forte.")
