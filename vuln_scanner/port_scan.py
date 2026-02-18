@@ -1,10 +1,13 @@
 import socket
 import json
 import os
+import requests
 from datetime import datetime
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from urllib.parse import urljoin, urlparse
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 # -------------------- CONFIG --------------------
 COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 8080]
@@ -12,17 +15,10 @@ PORT_SERVICES = {
     21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
     80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 3306: "MySQL", 8080: "HTTP-ALT"
 }
-SENSITIVE_PATHS = ["/admin","/login","/wp-admin","/phpmyadmin","/dashboard","/.env"]
+SENSITIVE_PATHS = ["/admin", "/login", "/wp-admin", "/phpmyadmin", "/dashboard", "/.env"]
 DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS"]
 DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
-
-# Links para tutoriais seguros
-TUTORIALS = {
-    "Telnet": "https://www.ssh.com/academy/ssh/telnet-vs-ssh",
-    "HTTP Headers": "https://owasp.org/www-project-secure-headers/",
-    "Diretórios Sensíveis": "https://portswigger.net/web-security/file-path-traversal",
-    "Métodos HTTP": "https://owasp.org/www-project-top-ten/2017/A5_2017-Broken_Access_Control.html"
-}
+SQLI_TESTS = ["'", '"', "' OR 1=1 -- ", '" OR "1"="1']
 
 # -------------------- UTILIDADES --------------------
 def ping_host(ip):
@@ -111,7 +107,7 @@ def interpretar_banner(porta, banner):
         if "server:" in banner.lower():
             try:
                 server = banner.lower().split("server:")[1].split()[0]
-                info.append(f"Servidor web identificado: {server}")
+                info.append(f"Servidor web: {server}")
             except:
                 pass
         if "set-cookie" in banner.lower():
@@ -146,13 +142,35 @@ def scan_host(ip):
         s.close()
     return resultados
 
+# -------------------- SQL INJECTION BÁSICO --------------------
+def scan_sqli(url):
+    vulneraveis = []
+    parsed = urlparse(url)
+    base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    if not parsed.query:
+        return vulneraveis
+    params = parsed.query.split("&")
+    for p in params:
+        key = p.split("=")[0]
+        for payload in SQLI_TESTS:
+            test_url = f"{base}?{key}={payload}"
+            try:
+                r = requests.get(test_url, timeout=3)
+                if "error" in r.text.lower() or "sql" in r.text.lower():
+                    vulneraveis.append(f"Parâmetro '{key}' vulnerável a SQLi (payload: {payload})")
+                    break
+            except:
+                continue
+    return vulneraveis
+
 # -------------------- RISCO --------------------
 def calcular_score(resultados):
     score = 0
     for r in resultados:
         if r["porta"] == 23: score += 50
         elif r["porta"] == 80: score += 20
-        if "metodos_http_perigosos" in r and r["metodos_http_perigosos"]: score += 20
+        if "metodos_http_perigosos" in r and r["metodos_http_perigosos"]:
+            score += 20
     return min(score, 100)
 
 def resumo_executivo(ip, resultados):
@@ -166,71 +184,67 @@ def resumo_executivo(ip, resultados):
     score = calcular_score(resultados)
     return risco, score
 
-# -------------------- PDF SIMPLES PARA BUG BOUNTY --------------------
-def gerar_pdf(ip, resultados, risco, score):
+# -------------------- PDF SIMPLES --------------------
+def gerar_pdf(ip, resultados, risco, score, sqli=[]):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     data = datetime.now().strftime("%Y-%m-%d_%H-%M")
     arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{data}.pdf"
-
     doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
     estilos = getSampleStyleSheet()
     elementos = []
 
-    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO BUG BOUNTY</b>", estilos["Title"]))
-    elementos.append(Spacer(1, 12))
+    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB & REDE</b>", estilos["Title"]))
+    elementos.append(Spacer(1,12))
     elementos.append(Paragraph(f"IP analisado: {ip}", estilos["Normal"]))
     elementos.append(Paragraph(f"Data: {datetime.now()}", estilos["Normal"]))
     elementos.append(Paragraph(f"Nível de risco: {risco}", estilos["Normal"]))
     elementos.append(Paragraph(f"Score geral: {score}/100", estilos["Normal"]))
-    elementos.append(Spacer(1, 12))
+    elementos.append(Spacer(1,12))
 
     for r in resultados:
         elementos.append(Paragraph(f"Porta {r['porta']} ({r['servico']})", estilos["Heading2"]))
         elementos.append(Paragraph(f"Banner / Info: {interpretar_banner(r['porta'], r['banner'])}", estilos["Normal"]))
-
         if r.get("diretorios_sensiveis"):
             elementos.append(Paragraph(f"Diretórios sensíveis: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
-            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['Diretórios Sensíveis']}", estilos["Normal"]))
-
         if r.get("headers_seguranca_ausentes"):
             elementos.append(Paragraph(f"Headers ausentes: {', '.join(r['headers_seguranca_ausentes'])}", estilos["Normal"]))
-            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['HTTP Headers']}", estilos["Normal"]))
-
         if r.get("metodos_http_perigosos"):
             elementos.append(Paragraph(f"Métodos HTTP perigosos: {', '.join(r['metodos_http_perigosos'])}", estilos["Normal"]))
-            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['Métodos HTTP']}", estilos["Normal"]))
+        elementos.append(Spacer(1,8))
 
-        if r["porta"] == 23:
-            elementos.append(Paragraph(f"Tutorial: {TUTORIALS['Telnet']}", estilos["Normal"]))
-
-        elementos.append(Spacer(1, 10))
+    if sqli:
+        elementos.append(Spacer(1,12))
+        elementos.append(Paragraph("<b>SQL Injection detectada:</b>", estilos["Heading2"]))
+        for vuln in sqli:
+            elementos.append(Paragraph(vuln, estilos["Normal"]))
 
     doc.build(elementos)
     print(f"\n📄 PDF salvo em: {arquivo_pdf}")
 
 # -------------------- MAIN --------------------
 if __name__ == "__main__":
-    alvo = input("IP alvo: ")
-    if not ping_host(alvo):
+    alvo = input("IP ou URL alvo: ").strip()
+    if not ping_host(alvo.split('/')[0]):
         print("Host inativo ou inacessível. Verifique a rede.")
         exit()
 
-    resultados = scan_host(alvo)
-    if not resultados:
-        print("\nNenhuma porta aberta encontrada.")
+    resultados = scan_host(alvo.split('/')[0])
+    sqli_vulns = scan_sqli(alvo)
+    if not resultados and not sqli_vulns:
+        print("Nenhuma vulnerabilidade encontrada.")
         exit()
 
-    risco, score = resumo_executivo(alvo, resultados)
-    gerar_pdf(alvo, resultados, risco, score)
+    risco, score = resumo_executivo(alvo.split('/')[0], resultados)
+    gerar_pdf(alvo, resultados, risco, score, sqli_vulns)
 
-    # Salvar JSON estruturado
-    with open(f"{DOWNLOAD_DIR}/relatorio_{alvo}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.json", "w") as f:
+    with open(f"{DOWNLOAD_DIR}/relatorio_{alvo}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.json","w") as f:
         json.dump({
             "ip": alvo,
             "data": str(datetime.now()),
             "risco": risco,
             "score": score,
-            "resultados": resultados
+            "resultados": resultados,
+            "sql_injection": sqli_vulns
         }, f, indent=4)
 
-    print("\n✅ Relatórios prontos para bug bounty!")
+    print("\n✅ Relatórios gerados com sucesso no celular.")
