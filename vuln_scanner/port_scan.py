@@ -16,10 +16,28 @@ SENSITIVE_PATHS = ["/admin","/login","/wp-admin","/phpmyadmin","/dashboard","/.e
 DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
 DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS"]
 
-# -------------------- UTILIDADES --------------------
+# -------------------- UTIL --------------------
+def escapar_pdf(texto):
+    if not texto:
+        return "Não identificado"
+    return (
+        texto.replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;")
+    )
+
+def limpar_banner(raw, limite=120):
+    raw = raw.decode("utf-8", errors="ignore")
+    raw = "".join(c for c in raw if c.isprintable())
+    raw = raw.replace("\r", " ").replace("\n", " ")
+    raw = " ".join(raw.split())
+    if len(raw) > limite:
+        raw = raw[:limite] + "..."
+    return raw if raw else "Não identificado"
+
 def ping_host(ip):
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s = socket.socket()
         s.settimeout(1)
         s.connect((ip, 80))
         s.close()
@@ -27,24 +45,17 @@ def ping_host(ip):
     except:
         return False
 
+# -------------------- NETWORK --------------------
 def grab_banner(ip, port):
     try:
         s = socket.socket()
         s.settimeout(2)
         s.connect((ip, port))
-
         if port in [80, 8080, 443]:
             s.send(b"HEAD / HTTP/1.0\r\n\r\n")
-
-        banner = s.recv(1024)
-        banner = banner.decode("utf-8", errors="ignore")
-        banner = "".join(c for c in banner if c.isprintable())
-        banner = banner.replace("\r", " ").replace("\n", " ")
-        banner = " ".join(banner.split())
-        if len(banner) > 120:
-            banner = banner[:120] + "..."
+        raw = s.recv(1024)
         s.close()
-        return banner if banner else "Não identificado"
+        return limpar_banner(raw)
     except:
         return "Não identificado"
 
@@ -55,9 +66,9 @@ def coletar_headers_http(ip, port):
         s.settimeout(3)
         s.connect((ip, port))
         s.send(b"GET / HTTP/1.1\r\nHost: alvo\r\n\r\n")
-        response = s.recv(4096).decode(errors="ignore")
+        resp = s.recv(4096).decode(errors="ignore")
         s.close()
-        for linha in response.split("\r\n"):
+        for linha in resp.split("\r\n"):
             if ":" in linha:
                 k, v = linha.split(":", 1)
                 headers[k.strip()] = v.strip()
@@ -76,8 +87,7 @@ def enumerar_diretorios(ip, port):
             s = socket.socket()
             s.settimeout(2)
             s.connect((ip, port))
-            req = f"GET {path} HTTP/1.1\r\nHost: alvo\r\n\r\n"
-            s.send(req.encode())
+            s.send(f"GET {path} HTTP/1.1\r\nHost: alvo\r\n\r\n".encode())
             resp = s.recv(1024).decode(errors="ignore")
             s.close()
             if "200 OK" in resp or "302" in resp:
@@ -93,16 +103,16 @@ def verificar_metodos_http(ip, port):
         s.settimeout(3)
         s.connect((ip, port))
         s.send(b"OPTIONS / HTTP/1.1\r\nHost: alvo\r\n\r\n")
-        response = s.recv(2048).decode(errors="ignore")
+        resp = s.recv(2048).decode(errors="ignore")
         s.close()
         for m in DANGEROUS_METHODS:
-            if m in response:
+            if m in resp:
                 ativos.append(m)
     except:
         pass
     return ativos
 
-# -------------------- SCANNER --------------------
+# -------------------- SCAN --------------------
 def scan_host(ip):
     resultados = []
     print(f"\nEscaneando {ip}...\n")
@@ -110,18 +120,17 @@ def scan_host(ip):
         s = socket.socket()
         s.settimeout(1)
         if s.connect_ex((ip, port)) == 0:
-            service = PORT_SERVICES.get(port, "Desconhecido")
-            banner = grab_banner(ip, port)
-            registro = {"porta": port, "servico": service, "banner": banner}
-
+            r = {
+                "porta": port,
+                "servico": PORT_SERVICES.get(port, "Desconhecido"),
+                "banner": grab_banner(ip, port)
+            }
             if port in [80, 8080, 443]:
                 headers = coletar_headers_http(ip, port)
-                registro["headers_http"] = headers
-                registro["headers_seguranca_ausentes"] = verificar_headers_seguranca(headers)
-                registro["diretorios_sensiveis"] = enumerar_diretorios(ip, port)
-                registro["metodos_http_perigosos"] = verificar_metodos_http(ip, port)
-
-            resultados.append(registro)
+                r["headers_seguranca_ausentes"] = verificar_headers_seguranca(headers)
+                r["diretorios_sensiveis"] = enumerar_diretorios(ip, port)
+                r["metodos_http_perigosos"] = verificar_metodos_http(ip, port)
+            resultados.append(r)
         s.close()
     return resultados
 
@@ -131,18 +140,11 @@ def calcular_score(resultados):
     for r in resultados:
         if r["porta"] == 23: score += 50
         elif r["porta"] == 80: score += 20
-        if "metodos_http_perigosos" in r and r["metodos_http_perigosos"]:
-            score += 20
+        if r.get("metodos_http_perigosos"): score += 20
     return min(score, 100)
 
 def resumo_executivo(ip, resultados):
-    risco = "BAIXO"
-    for r in resultados:
-        if r["porta"] == 23:
-            risco = "ALTO"
-            break
-        elif r["porta"] == 80:
-            risco = "MÉDIO"
+    risco = "ALTO" if any(r["porta"] == 23 for r in resultados) else "MÉDIO"
     score = calcular_score(resultados)
     print("\n====== RESUMO EXECUTIVO ======")
     print(f"IP analisado: {ip}")
@@ -151,61 +153,71 @@ def resumo_executivo(ip, resultados):
     print(f"Score de risco: {score}/100")
     return risco, score
 
-# -------------------- PDF PROFISSIONAL --------------------
+# -------------------- PDF --------------------
 def gerar_pdf(ip, resultados, risco, score):
-    from reportlab.platypus import PageBreak
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    data = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{data}.pdf"
-    doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
+    nome = f"{DOWNLOAD_DIR}/SOC_ARX_{ip}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.pdf"
+    doc = SimpleDocTemplate(nome, pagesize=A4)
     estilos = getSampleStyleSheet()
     elementos = []
 
-    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB & REDE</b>", estilos["Title"]))
+    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE SEGURANÇA</b>", estilos["Title"]))
     elementos.append(Spacer(1, 12))
     elementos.append(Paragraph(f"IP analisado: {ip}", estilos["Normal"]))
-    elementos.append(Paragraph(f"Data: {datetime.now()}", estilos["Normal"]))
     elementos.append(Paragraph(f"Risco: {risco}", estilos["Normal"]))
     elementos.append(Paragraph(f"Score: {score}/100", estilos["Normal"]))
-    elementos.append(Spacer(1, 12))
-    elementos.append(PageBreak())  # Separa capa do conteúdo
+    elementos.append(PageBreak())
 
     for r in resultados:
-        elementos.append(Paragraph(f"<b>Porta {r['porta']} ({r['servico']})</b>", estilos["Heading2"]))
-        elementos.append(Paragraph(f"Banner / Info: {r['banner']}", estilos["Normal"]))
+        elementos.append(Paragraph(
+            f"<b>Porta {r['porta']} ({r['servico']})</b>",
+            estilos["Heading2"]
+        ))
+
+        elementos.append(Paragraph(
+            f"<b>Banner:</b> {escapar_pdf(r['banner'])}",
+            estilos["Normal"]
+        ))
+
         if r.get("diretorios_sensiveis"):
-            elementos.append(Paragraph(f"Diretórios sensíveis: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
+            elementos.append(Paragraph(
+                f"<b>Diretórios:</b> {escapar_pdf(', '.join(r['diretorios_sensiveis']))}",
+                estilos["Normal"]
+            ))
+
         if r.get("headers_seguranca_ausentes"):
-            elementos.append(Paragraph(f"Headers ausentes: {', '.join(r['headers_seguranca_ausentes'])}", estilos["Normal"]))
+            elementos.append(Paragraph(
+                f"<b>Headers ausentes:</b> {escapar_pdf(', '.join(r['headers_seguranca_ausentes']))}",
+                estilos["Normal"]
+            ))
+
         if r.get("metodos_http_perigosos"):
-            elementos.append(Paragraph(f"Métodos HTTP perigosos: {', '.join(r['metodos_http_perigosos'])}", estilos["Normal"]))
+            elementos.append(Paragraph(
+                f"<b>Métodos HTTP perigosos:</b> {escapar_pdf(', '.join(r['metodos_http_perigosos']))}",
+                estilos["Normal"]
+            ))
+
         elementos.append(Spacer(1, 12))
 
     doc.build(elementos)
-    print(f"\n📄 PDF salvo em: {arquivo_pdf}")
+    print(f"\n📄 PDF salvo em: {nome}")
 
 # -------------------- MAIN --------------------
 if __name__ == "__main__":
     alvo = input("IP alvo: ")
     if not ping_host(alvo):
-        print("Host inativo ou inacessível. Verifique a rede.")
+        print("Host inacessível.")
         exit()
+
     resultados = scan_host(alvo)
     if not resultados:
-        print("\nNenhuma porta aberta encontrada.")
+        print("Nenhuma porta aberta.")
         exit()
+
     risco, score = resumo_executivo(alvo, resultados)
     gerar_pdf(alvo, resultados, risco, score)
 
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    arquivo_json = f"{DOWNLOAD_DIR}/relatorio_{alvo}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.json"
-    with open(arquivo_json, "w") as f:
-        json.dump({
-            "ip": alvo,
-            "data": str(datetime.now()),
-            "risco": risco,
-            "score": score,
-            "resultados": resultados
-        }, f, indent=4)
+    with open(f"{DOWNLOAD_DIR}/SOC_ARX_{alvo}.json", "w") as f:
+        json.dump(resultados, f, indent=4)
 
-    print("\n✅ Relatórios gerados com sucesso no celular.")
+    print("\n✅ Execução concluída com sucesso.")
