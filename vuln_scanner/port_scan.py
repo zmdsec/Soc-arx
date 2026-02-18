@@ -1,5 +1,6 @@
 import socket
 import json
+import os
 from datetime import datetime
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.pagesizes import A4
@@ -30,6 +31,8 @@ SENSITIVE_PATHS = [
     "/.env"
 ]
 
+DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
+
 
 # ===================== RECON WEB =====================
 
@@ -47,7 +50,6 @@ def coletar_headers_http(ip, port):
             if ":" in linha:
                 k, v = linha.split(":", 1)
                 headers[k.strip()] = v.strip()
-
     except:
         pass
 
@@ -61,7 +63,6 @@ def verificar_headers_seguranca(headers):
         "X-Content-Type-Options",
         "Strict-Transport-Security"
     ]
-
     return [h for h in essenciais if h not in headers]
 
 
@@ -80,7 +81,6 @@ def enumerar_diretorios(ip, port):
 
             if "200 OK" in resp or "302" in resp:
                 encontrados.append(path)
-
         except:
             continue
 
@@ -173,12 +173,16 @@ def resumo_executivo(alvo, resultados):
 # ===================== PDF =====================
 
 def gerar_pdf(alvo, resultados, risco, score):
-    arquivo_pdf = f"relatorio_{alvo}.pdf"
+    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+    data = datetime.now().strftime("%Y-%m-%d_%H-%M")
+    arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{alvo}_{data}.pdf"
+
     doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
     estilos = getSampleStyleSheet()
     elementos = []
 
-    elementos.append(Paragraph("<b>RELATÓRIO DE RECON WEB</b>", estilos["Title"]))
+    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB</b>", estilos["Title"]))
     elementos.append(Spacer(1, 12))
 
     elementos.append(Paragraph(f"IP analisado: {alvo}", estilos["Normal"]))
@@ -189,10 +193,10 @@ def gerar_pdf(alvo, resultados, risco, score):
 
     for r in resultados:
         elementos.append(
-            Paragraph(f"Porta {r['porta']} - {r['servico']}", estilos["Heading2"])
+            Paragraph(f"Porta {r['porta']} – {r['servico']}", estilos["Heading2"])
         )
 
-        if "headers_seguranca_ausentes" in r:
+        if "headers_seguranca_ausentes" in r and r["headers_seguranca_ausentes"]:
             elementos.append(
                 Paragraph(
                     f"Headers de segurança ausentes: {', '.join(r['headers_seguranca_ausentes'])}",
@@ -211,7 +215,8 @@ def gerar_pdf(alvo, resultados, risco, score):
         elementos.append(Spacer(1, 8))
 
     doc.build(elementos)
-    print(f"\nRelatório PDF gerado: {arquivo_pdf}")
+
+    print(f"\n📄 PDF salvo em: {arquivo_pdf}")
 
 
 # ===================== MAIN =====================
@@ -236,4 +241,4 @@ if __name__ == "__main__":
             "resultados": resultados
         }, f, indent=4)
 
-    print("\nRelatórios gerados com sucesso.")
+    print("\n✅ Relatórios gerados com sucesso.")
