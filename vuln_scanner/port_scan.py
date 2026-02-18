@@ -1,44 +1,54 @@
 import socket
-from core.logger import log_event
-from core.risk_engine import calculate_risk
+import json
+from datetime import datetime
 
-COMMON_SERVICES = {
-    21: "FTP",
-    22: "SSH",
-    23: "Telnet",
-    80: "HTTP",
-    443: "HTTPS",
-    445: "SMB",
-    3389: "RDP"
-}
+COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 8080]
 
-SENSITIVE_PORTS = [21, 23, 445, 3389]
+def grab_banner(ip, port):
+    try:
+        s = socket.socket()
+        s.settimeout(2)
+        s.connect((ip, port))
+        s.send(b"HEAD / HTTP/1.0\r\n\r\n")
+        banner = s.recv(1024).decode(errors="ignore")
+        s.close()
+        return banner.strip()
+    except:
+        return "Banner não identificado"
 
-def scan(target, ports):
-    open_ports = []
+def scan(ip):
+    results = []
+    print(f"\nEscaneando {ip}...\n")
 
-    for port in ports:
+    for port in COMMON_PORTS:
         s = socket.socket()
         s.settimeout(1)
-        if s.connect_ex((target, port)) == 0:
-            service = COMMON_SERVICES.get(port, "Unknown")
-            open_ports.append((port, service))
+        result = s.connect_ex((ip, port))
 
-            print(f"[ABERTA] Porta {port} ({service})")
-
-            if port in SENSITIVE_PORTS:
-                risk = calculate_risk("port_scan")
-                log_event("port_scan", f"{target}:{port} | Risco {risk}")
+        if result == 0:
+            print(f"[ABERTA] Porta {port}")
+            banner = grab_banner(ip, port)
+            results.append({
+                "porta": port,
+                "banner": banner
+            })
 
         s.close()
 
-    return open_ports
+    return results
 
 
 if __name__ == "__main__":
-    target = input("IP alvo: ")
-    ports = [21,22,23,80,443,445,3389]
-    result = scan(target, ports)
+    alvo = input("IP alvo: ")
+    dados = scan(alvo)
 
-    if not result:
-        print("Nenhuma porta aberta.")
+    arquivo = f"relatorio_{alvo}.json"
+
+    with open(arquivo, "w") as f:
+        json.dump({
+            "ip": alvo,
+            "data": str(datetime.now()),
+            "resultados": dados
+        }, f, indent=4)
+
+    print(f"\nRelatório salvo em {arquivo}")
