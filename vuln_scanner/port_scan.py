@@ -1,11 +1,11 @@
 import socket
-import json
 import os
 import requests
 import ssl
 import uuid
 import urllib3
 import time
+import re
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import List, Dict, Any
@@ -15,7 +15,7 @@ try:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER, TA_LEFT
+    from reportlab.lib.enums import TA_CENTER
     REPORTLAB_OK = True
 except ImportError:
     REPORTLAB_OK = False
@@ -77,7 +77,6 @@ RECOMENDACOES = {
     "Headers": "Faltam headers de segurança → CSP, HSTS, etc",
 }
 
-# Caminho corrigido (sem escape inválido)
 DOWNLOAD_DIR = os.path.expanduser("\~/storage/shared/Download/Soc-Arx")
 
 # ────────────────────────────────────────────────
@@ -93,6 +92,20 @@ def garantir_diretorio():
         cprint(f"[ERRO] Sem permissão em {DOWNLOAD_DIR}", "red")
         cprint("Execute: termux-setup-storage", "yellow")
         exit(1)
+
+def is_private_ip(ip: str) -> bool:
+    """Retorna True se for IP privado (não tenta subdomínios)"""
+    parts = ip.split('.')
+    if len(parts) != 4: return False
+    a, b, c, d = map(int, parts)
+    return (a == 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 127)
+
+def clean_for_pdf(text: str, max_len: int = 150) -> str:
+    """Escapa caracteres que quebram o Paragraph do ReportLab"""
+    text = re.sub(r'<[^>]+>', '', text)               # remove tags HTML
+    text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+    text = ' '.join(text.split())                     # remove quebras de linha excessivas
+    return text[:max_len] + ("..." if len(text) > max_len else "")
 
 def verificar_ssl(dominio: str) -> Dict[str, Any]:
     try:
@@ -123,6 +136,10 @@ def detectar_tecnologias(url: str) -> List[str]:
     return list(techs)
 
 def scan_subdominios(dominio: str) -> List[Dict]:
+    if is_private_ip(dominio):
+        cprint("[INFO] IP privado detectado → pulando enumeração de subdomínios", "yellow")
+        return []
+
     encontrados = []
     wildcard_ip = None
     try:
@@ -150,8 +167,8 @@ def grab_banner(ip: str, port: int) -> str:
             s.settimeout(3)
             s.connect((ip, port))
             if port in (80, 443, 8080, 8443):
-                s.send(f"HEAD / HTTP/1.1\r\nHost: {ip}\r\n\r\n".encode())
-            data = s.recv(1024).decode(errors='ignore').strip()[:180]
+                s.send(f"HEAD / HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n".encode())
+            data = s.recv(2048).decode(errors='ignore').strip()
             return data or "—"
     except:
         return "Conexão recusada"
@@ -221,8 +238,8 @@ def scan_host_completo(host: str) -> List[Dict]:
                     info["metodos_perigosos"] = verificar_metodos_http(url)
                     info["diretorios"] = enumerar_diretorios(url)
                     info["cors"] = verificar_cors_simples(url)
-                except:
-                    pass
+                except Exception as e:
+                    info["web_erro"] = str(e)[:80]
             resultados.append(info)
         s.close()
     return resultados
@@ -235,7 +252,7 @@ def scan_sqli(url_completa: str) -> List[str]:
     base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}?"
     params = [p.split("=")[0] for p in parsed.query.split("&") if "=" in p]
 
-    for param in set(params):  # evita duplicatas
+    for param in set(params):
         for payload in SQLI_TESTS:
             test_url = f"{base}{param}={payload.replace(' ', '+')}"
             try:
@@ -254,7 +271,7 @@ def scan_sqli(url_completa: str) -> List[str]:
     return list(set(vulneraveis))
 
 # ────────────────────────────────────────────────
-# GERAÇÃO DE RELATÓRIO PDF
+# GERAÇÃO DE RELATÓRIO PDF (com escape no banner)
 # ────────────────────────────────────────────────
 
 def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data: Dict, techs: List):
@@ -264,7 +281,7 @@ def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data:
 
     doc = SimpleDocTemplate(nome_arquivo, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
     styles = getSampleStyleSheet()
-    
+
     title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=22, textColor=colors.darkblue, alignment=TA_CENTER, spaceAfter=20)
     heading_style = ParagraphStyle('Heading2', parent=styles['Heading2'], fontSize=14, textColor=colors.navy, spaceAfter=12)
     normal_style = styles['Normal']
@@ -327,7 +344,10 @@ def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data:
     elements.append(Paragraph("Portas Abertas & Vulnerabilidades", heading_style))
     for r in resultados:
         elements.append(Paragraph(f"Porta {r['porta']} – {r['servico']}", heading_style))
-        elements.append(Paragraph(f"Banner: {r['banner'][:150]}...", normal_style))
+        
+        # Banner seguro para PDF
+        safe_banner = clean_for_pdf(r['banner'])
+        elements.append(Paragraph(f"Banner: {safe_banner}", normal_style))
         
         rec = RECOMENDACOES.get(r['porta'], "Nenhuma recomendação crítica")
         elements.append(Paragraph(f"Recomendação: {rec}", recom_style))
@@ -361,7 +381,7 @@ def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data:
 
 if __name__ == "__main__":
     print("\n" + "═"*70)
-    cprint("     SOC-ARX Auditor v3.2 – PDF Report Ready     ", "cyan")
+    cprint("     SOC-ARX Auditor v3.3 – Versão Estável     ", "cyan")
     print("═"*70 + "\n")
 
     alvo = input("Alvo (IP / domínio / URL completa): ").strip()
@@ -395,7 +415,6 @@ if __name__ == "__main__":
     if REPORTLAB_OK:
         gerar_pdf_pro(dominio, portas, sql_inj, subdominios, ssl_info, techs)
     else:
-        # Fallback TXT corrigido (variáveis definidas antes)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         score = 100 - (len(portas) * 6) - (50 if sql_inj else 0)
         score = max(10, score)
@@ -405,10 +424,16 @@ if __name__ == "__main__":
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(f"SOC-ARX AUDIT – {dominio}\n\n")
             f.write(f"Risco: {risco} | Score estimado: {score}/100\n\n")
-            f.write(f"Portas abertas encontradas: {len(portas)}\n")
+            f.write(f"Portas abertas: {len(portas)}\n")
+            if portas:
+                f.write("Portas:\n")
+                for p in portas:
+                    f.write(f"  {p['porta']} - {p['servico']} | {clean_for_pdf(p['banner'], 100)}\n")
             f.write(f"Possíveis SQLi: {len(sql_inj)}\n")
-            f.write("\nUse reportlab para relatórios em PDF mais bonitos.\n")
-        cprint(f"[TXT] Relatório simples salvo em: {txt_path}", "yellow")
+            if sql_inj:
+                f.write("SQLi:\n" + "\n".join(f"  • {v}" for v in sql_inj) + "\n")
+            f.write("\nUse pip install reportlab para PDF completo.\n")
+        cprint(f"[TXT] Relatório salvo em: {txt_path}", "yellow")
 
     cprint(f"\nConcluído em {tempo} segundos.", "cyan")
     print("Uso apenas em alvos autorizados!")
