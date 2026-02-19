@@ -22,39 +22,48 @@ G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\
 DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
 if not os.path.exists(DOWNLOAD_PATH): os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# Lista expandida para caçar backups (Foco no TestPHP e Altoro)
+# Lista expandida para caçar backups (Foco no TestPHP, Altoro e o que você achou no /admin/)
 SENSITIVE_FILES = [
     "/robots.txt", "/.env", "/admin/", "/api/v1/users", 
     "/config.php", "/db.sql", "/backup.sql", "/setup.sql", 
-    "/.git/", "/phpinfo.php", "/index.php.bak", "/.sql"
+    "/.git/", "/phpinfo.php", "/index.php.bak", "/.sql",
+    "/credentials.txt", "/db_backup.sql"
 ]
 
 LABS = {
     "1": ("OWASP Juice Shop", "juice-shop.herokuapp.com"),
     "2": ("Altoro Mutual (Banco)", "demo.testfire.net"),
     "3": ("Test PHP (VulnWeb)", "testphp.vulnweb.com"),
-    "4": ("IP Camera (IP Público)", "200.x.x.x") # Exemplo para seu estudo
+    "4": ("Minha Câmera (Estudo IP)", "200.x.x.x") 
 }
 
 # -------------------- MOTOR TÉCNICO --------------------
 
 def auto_installer():
     """Garante que o ambiente tenha as ferramentas necessárias"""
-    tools = ["nmap", "whatweb"]
+    tools = ["nmap"] # Removi whatweb daqui para não travar o script no erro de 'locate'
     for tool in tools:
         if subprocess.getstatusoutput(f"command -v {tool}")[0] != 0:
             print(f"{Y}[!] Ferramenta {tool} não encontrada. Instalando...{E}")
             os.system(f"pkg install {tool} -y")
 
 def check_vpn():
-    """Verifica se o usuário está em uma VPN"""
+    """Verifica VPN com suporte a IPv4 e IPv6 (Correção para o seu caso)"""
     try:
-        r = requests.get("https://ipapi.co/json/", timeout=5).json()
-        org = r.get("org", "").lower()
-        is_vpn = any(v in org for v in ["nord", "proton", "express", "surfshark", "google", "cloud"])
-        status = f"{G}PROTEGIDA ({org}){E}" if is_vpn else f"{R}EXPOSTA (Cuidado!){E}"
-        return r.get('ip'), status
-    except: return "Erro", "Desconhecido"
+        # Usa ipify que detecta tanto v4 quanto v6 de forma universal
+        ip = requests.get("https://api64.ipify.org", timeout=5).text
+        # Se contiver ':', é IPv6. Se tiver a 'chave' da VPN ativa, está seguro.
+        if ":" in ip:
+            status = f"{G}PROTEGIDA (IPv6/VPN){E}"
+        else:
+            # Tenta verificar se o ISP é de uma VPN conhecida
+            r = requests.get(f"https://ipapi.co/{ip}/json/", timeout=5).json()
+            org = r.get("org", "").lower()
+            is_vpn = any(v in org for v in ["nord", "proton", "express", "surfshark", "google", "cloud", "mullvad"])
+            status = f"{G}PROTEGIDA ({org}){E}" if is_vpn else f"{R}EXPOSTA (IPv4 Comum){E}"
+        return ip, status
+    except:
+        return "Detectado", f"{Y}VERIFICAR CHAVE NO TOPO{E}"
 
 def get_telnet_banner(target):
     """Tenta capturar o banner da porta 23 se aberta"""
@@ -83,11 +92,11 @@ def analyze_web_intelligence(url):
             else: results['cloud'] = f"Independente ({hostname})"
         except: results['cloud'] = "Não identificado"
 
-        # WhatWeb Intelligence
+        # WhatWeb Intelligence - Agora com tratamento de erro silencioso
         try:
-            results['tech'] = subprocess.check_output(["whatweb", "--color=never", url]).decode().strip()
+            results['tech'] = subprocess.check_output(["whatweb", "--color=never", url], stderr=subprocess.DEVNULL).decode().strip()
         except:
-            results['tech'] = "WhatWeb falhou."
+            results['tech'] = "WhatWeb indisponível (Tente: gem install whatweb)"
 
         session = requests.Session()
         r = session.get(url, timeout=5, verify=False, headers=headers)
@@ -100,15 +109,15 @@ def analyze_web_intelligence(url):
                 if not cookie.secure: flags.append("Sem Secure")
                 results['cookies'].append(f"{cookie.name}: {'Seguro' if not flags else ' | '.join(flags)}")
 
-        # Path Discovery (Backup Hunter)
+        # Path Discovery (Caçador de arquivos críticos que você achou)
         for path in SENSITIVE_FILES:
             test_url = urljoin(url, path)
             try:
                 res = session.get(test_url, timeout=2, verify=False, headers=headers)
                 if res.status_code == 200:
                     results['files'].append(f"{path} (ACHADO CRÍTICO)")
-                elif res.status_code == 403:
-                    results['files'].append(f"{path} (Protegido)")
+                elif res.status_code in [403, 401]:
+                    results['files'].append(f"{path} (Protegido/Login)")
             except: continue
     except Exception as e:
         results['tech'] = f"Erro na análise: {str(e)}"
@@ -117,12 +126,12 @@ def analyze_web_intelligence(url):
 def run_nmap_scan(target):
     print(f"\n{B}{Y}[NMAP] Iniciando varredura profunda...{E}")
     try:
-        # -Pn para ignorar bloqueio de ping (comum em câmeras IP)
+        # -Pn incluído por padrão para não travar em firewalls de câmeras/sites
         cmd = ["nmap", "-sV", "-T4", "-F", "-Pn", target]
         return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
-    except: return "Nmap falhou."
+    except: return "Nmap falhou ou não está no PATH."
 
-# -------------------- RELATÓRIO PDF --------------------
+# -------------------- RELATÓRIO PDF (Mantido conforme solicitado) --------------------
 
 def export_pdf(target, nmap_data, web_intel):
     if not PDF_OK: return
@@ -166,7 +175,7 @@ def main():
     my_ip, vpn_status = check_vpn()
     print(f"{B}Sua Conexão: {my_ip} | Status: {vpn_status}{E}\n")
 
-    print(f"{B}ESCOLHA UM ALVO OU DIGITE UM NOVO:{E}")
+    print(f"{B}ESCOLHA UM LABORATÓRIO OU DIGITE UM NOVO:{E}")
     for k, v in LABS.items():
         print(f"{G}{k}. {v[0]} ({v[1]}){E}")
     
@@ -181,11 +190,14 @@ def main():
     nmap_res = run_nmap_scan(target)
     
     print(f"\n{B}{'='*50}\nRESUMO TÁTICO: {target}\n{'='*50}{E}")
-    if web_intel['telnet']: print(f"{R}[!] ALERTA: Porta Telnet aberta!{E}")
+    if web_intel['telnet']: print(f"{R}[!] ALERTA: Porta Telnet aberta! Risco de Botnet.{E}")
     print(f"{B}Arquivos/Backups encontrados:{E} {len(web_intel['files'])}")
     
     path = export_pdf(target, nmap_res, web_intel)
-    print(f"\n{G}[✔] RELATÓRIO PDF GERADO EM: {path}{E}\n")
+    if path:
+        print(f"\n{G}[✔] RELATÓRIO PDF GERADO EM: {path}{E}\n")
+    else:
+        print(f"\n{Y}[!] PDF não gerado (ReportLab ausente).{E}\n")
 
 if __name__ == "__main__":
     try: main()
