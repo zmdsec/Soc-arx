@@ -2,7 +2,9 @@ import socket
 import json
 import os
 import requests
-import ssl # Novo
+import ssl
+import uuid
+import threading
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -10,293 +12,273 @@ from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib import colors
 
-# -------------------- CONFIG --------------------
-COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 3306, 8080]
+# -------------------- CONFIGURAÇÕES GLOBAIS --------------------
+COMMON_PORTS = [21, 22, 23, 25, 53, 80, 110, 143, 443, 445, 3306, 3389, 8080, 8443]
 PORT_SERVICES = {
     21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS",
-    80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 3306: "MySQL", 8080: "HTTP-ALT"
+    80: "HTTP", 110: "POP3", 143: "IMAP", 443: "HTTPS", 445: "SMB",
+    3306: "MySQL", 3389: "RDP", 8080: "HTTP-ALT", 8443: "HTTPS-ALT"
 }
-SENSITIVE_PATHS = ["/admin", "/login", "/wp-admin", "/phpmyadmin", "/dashboard", "/.env"]
-DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS"]
+SENSITIVE_PATHS = [
+    "/admin", "/login", "/wp-admin", "/phpmyadmin", "/dashboard", "/.env", 
+    "/.git", "/config.php", "/backup", "/v1/api", "/robots.txt"
+]
+DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS", "CONNECT"]
 DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
-SQLI_TESTS = ["'", '"', "' OR 1=1 -- ", '" OR "1"="1']
-SUBDOMAINS_LIST = ["www", "mail", "dev", "test", "api", "admin", "vpn", "ssh", "staging"]
+SQLI_TESTS = ["'", '"', "' OR 1=1 -- ", '" OR "1"="1', "admin' --", "') OR ('1'='1"]
+SUBDOMAINS_LIST = ["www", "mail", "dev", "test", "api", "admin", "vpn", "ssh", "staging", "mysql", "support"]
 
 RECOMENDACOES = {
-    21: "FTP é inseguro. Use SFTP (Porta 22).",
-    23: "CRÍTICO: Telnet expõe senhas. Desative e use SSH.",
-    80: "HTTP detectado. Instale SSL e use HTTPS (443).",
-    "SQLi": "Use 'Prepared Statements' para evitar injeção de comandos.",
-    "Headers": "Configure Headers de segurança (HSTS, CSP) no servidor.",
-    "Paths": "Restrinja acesso a diretórios sensíveis via firewall.",
-    "SSL": "Certificado SSL inválido ou ausente. Corrija para garantir a criptografia."
+    21: "FTP é inseguro. Use SFTP (Porta 22) para criptografia.",
+    23: "CRÍTICO: Telnet expõe senhas em texto claro. Desative imediatamente e use SSH.",
+    25: "SMTP exposto pode permitir Relay de SPAM. Verifique autenticação.",
+    80: "HTTP detectado. Instale um certificado SSL e force o redirecionamento para HTTPS.",
+    445: "SMB exposto é um vetor comum para Ransomware (WannaCry). Feche o acesso externo.",
+    3306: "MySQL não deve ser acessível pela Internet. Use túneis SSH ou VPN.",
+    3389: "RDP exposto é alvo constante de Brute Force. Use Gateway de Desktop Remoto.",
+    "SQLi": "Vulnerabilidade Crítica! Use 'Prepared Statements' e sanitize todas as entradas de usuários.",
+    "Headers": "Segurança de Navegador: Implemente HSTS, CSP e X-Frame-Options para evitar Clickjacking.",
+    "Paths": "Diretório Sensível Exposto: Restrinja o acesso via .htaccess ou Firewall de Aplicação (WAF).",
+    "SSL": "SSL Inválido: Isso destrói a confiança do cliente e o ranking no Google. Renove o certificado."
 }
 
-# -------------------- NOVOS MÓDULOS (ADICIONADOS) --------------------
+# -------------------- MÓDULOS DE RECONHECIMENTO --------------------
 
 def verificar_ssl(dominio):
     try:
         context = ssl.create_default_context()
-        with socket.create_connection((dominio, 443), timeout=2) as sock:
+        with socket.create_connection((dominio, 443), timeout=3) as sock:
             with context.wrap_socket(sock, server_hostname=dominio) as ssock:
                 cert = ssock.getpeercert()
-                validade = cert.get('notAfter')
-                return f"Válido até {validade}"
-    except:
-        return "Inexistente ou Inválido"
+                expira = cert.get('notAfter')
+                sujeito = dict(x[0] for x in cert.get('subject'))
+                emissor = dict(x[0] for x in cert.get('issuer'))
+                return {
+                    "status": "Válido",
+                    "expira": expira,
+                    "emissor": emissor.get('organizationName', 'Desconhecido')
+                }
+    except Exception as e:
+        return {"status": "Inexistente/Inválido", "erro": str(e)}
 
 def detectar_tecnologias(url):
+    print(f"[*] Executando Fingerprinting em {url}...")
     techs = []
     try:
-        r = requests.get(url, timeout=2)
+        r = requests.get(url, timeout=4, verify=False, allow_redirects=True)
         h = r.headers
         if 'Server' in h: techs.append(f"Servidor: {h['Server']}")
-        if 'X-Powered-By' in h: techs.append(f"Tecnologia: {h['X-Powered-By']}")
+        if 'X-Powered-By' in h: techs.append(f"Linguagem: {h['X-Powered-By']}")
+        if 'via' in h.lower(): techs.append(f"Proxy/WAF: {h['via']}")
+        # Verificação de CMS por corpo de página
+        corpo = r.text.lower()
+        if "wp-content" in corpo: techs.append("CMS: WordPress")
+        if "drupal" in corpo: techs.append("CMS: Drupal")
+        if "joomla" in corpo: techs.append("CMS: Joomla")
     except: pass
-    return techs if techs else ["Não identificadas"]
+    return techs
 
-# -------------------- UTILIDADES ORIGINAIS --------------------
+# -------------------- LÓGICA DE REDE E DNS --------------------
+
 def ping_host(ip):
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1)
-        s.connect((ip, 80))
-        s.close()
+        socket.setdefaulttimeout(1.5)
+        socket.gethostbyname(ip)
         return True
-    except:
-        return False
+    except: return False
+
+def scan_subdominios(dominio):
+    print(f"[*] Iniciando Busca de Subdomínios (Anti-Pegadinha)...")
+    encontrados = []
+    
+    # Detecção de Wildcard DNS (Falso Positivo)
+    ip_falso = None
+    try:
+        ip_falso = socket.gethostbyname(f"arx-check-{uuid.uuid4().hex[:6]}.{dominio}")
+        print(f"[!] Aviso: Rede com Wildcard detectada (Redirecionando para {ip_falso})")
+    except: pass
+
+    for sub in SUBDOMAINS_LIST:
+        alvo_sub = f"{sub}.{dominio}"
+        try:
+            ip_real = socket.gethostbyname(alvo_sub)
+            if ip_real != ip_falso:
+                encontrados.append({"host": alvo_sub, "ip": ip_real})
+                print(f"  [+] Achado: {alvo_sub}")
+        except: continue
+    return encontrados
 
 def grab_banner(ip, port):
     try:
         s = socket.socket()
-        s.settimeout(2)
+        s.settimeout(2.5)
         s.connect((ip, port))
         if port in [80, 8080, 443]:
-            s.send(b"HEAD / HTTP/1.0\r\n\r\n")
-        banner = s.recv(1024).decode(errors="ignore").strip()
+            s.send(b"HEAD / HTTP/1.1\r\nHost: " + ip.encode() + b"\r\n\r\n")
+        banner = s.recv(2048).decode(errors="ignore").strip()
         s.close()
-        return banner if banner else "Banner não identificado"
-    except:
-        return "Banner não identificado"
+        return banner if banner else "Sem banner disponível"
+    except: return "Conexão recusada/Timeout"
 
-def coletar_headers_http(ip, port):
-    headers = {}
-    try:
-        s = socket.socket()
-        s.settimeout(3)
-        s.connect((ip, port))
-        s.send(b"GET / HTTP/1.1\r\nHost: alvo\r\n\r\n")
-        response = s.recv(4096).decode(errors="ignore")
-        s.close()
-        for linha in response.split("\r\n"):
-            if ":" in linha:
-                k, v = linha.split(":", 1)
-                headers[k.strip()] = v.strip()
-    except:
-        pass
-    return headers
+# -------------------- AUDITORIA WEB --------------------
 
-def verificar_headers_seguranca(headers):
-    essenciais = ["X-Frame-Options","Content-Security-Policy","X-Content-Type-Options","Strict-Transport-Security"]
-    return [h for h in essenciais if h not in headers]
-
-def enumerar_diretorios(ip, port):
-    encontrados = []
-    for path in SENSITIVE_PATHS:
-        try:
-            s = socket.socket()
-            s.settimeout(2)
-            s.connect((ip, port))
-            req = f"GET {path} HTTP/1.1\r\nHost: alvo\r\n\r\n"
-            s.send(req.encode())
-            resp = s.recv(1024).decode(errors="ignore")
-            s.close()
-            if "200 OK" in resp or "302" in resp:
-                encontrados.append(path)
-        except:
-            continue
-    return encontrados
-
-def verificar_metodos_http(ip, port):
-    metodos_ativos = []
-    try:
-        s = socket.socket()
-        s.settimeout(3)
-        s.connect((ip, port))
-        s.send(b"OPTIONS / HTTP/1.1\r\nHost: alvo\r\n\r\n")
-        response = s.recv(2048).decode(errors="ignore")
-        s.close()
-        for metodo in DANGEROUS_METHODS:
-            if metodo in response:
-                metodos_ativos.append(metodo)
-    except:
-        pass
-    return metodos_ativos
-
-def interpretar_banner(porta, banner):
-    banner = banner.replace("<", "&lt;").replace(">", "&gt;")
-    if porta == 23:
-        return "Telnet ativo com prompt de autenticação (inseguro)"
-    if porta in [80, 8080, 443]:
-        info = []
-        if "server:" in banner.lower():
-            try:
-                server = banner.lower().split("server:")[1].split()[0]
-                info.append(f"Servidor web: {server}")
-            except:
-                pass
-        if "set-cookie" in banner.lower():
-            info.append("Cookie de sessão detectado")
-        if not info:
-            info.append("Serviço HTTP ativo")
-        return " | ".join(info)
-    return "Serviço ativo (banner genérico)"
-
-def scan_subdominios(dominio):
-    print(f"[*] Buscando subdomínios em {dominio}...")
-    encontrados = []
-    for sub in SUBDOMAINS_LIST:
-        alvo_sub = f"{sub}.{dominio}"
-        try:
-            ip = socket.gethostbyname(alvo_sub)
-            encontrados.append({"host": alvo_sub, "ip": ip})
-            print(f"  [+] {alvo_sub} -> {ip}")
-        except:
-            continue
-    return encontrados
-
-def scan_host(ip):
+def scan_host_completo(ip):
+    print(f"[*] Escaneando portas e serviços em {ip}...")
     resultados = []
-    print(f"\nEscaneando {ip}...\n")
     for port in COMMON_PORTS:
-        s = socket.socket()
-        s.settimeout(1)
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.6)
         if s.connect_ex((ip, port)) == 0:
-            service = PORT_SERVICES.get(port, "Desconhecido")
+            serv = PORT_SERVICES.get(port, "Desconhecido")
             banner = grab_banner(ip, port)
-            registro = {"porta": port, "servico": service, "banner": banner}
+            registro = {"porta": port, "servico": serv, "banner": banner}
+            
             if port in [80, 8080, 443]:
-                headers = coletar_headers_http(ip, port)
-                registro["headers_http"] = headers
-                registro["headers_seguranca_ausentes"] = verificar_headers_seguranca(headers)
-                registro["diretorios_sensiveis"] = enumerar_diretorios(ip, port)
-                registro["metodos_http_perigosos"] = verificar_metodos_http(ip, port)
+                # Cabeçalhos
+                url = f"{'https' if port == 443 else 'http'}://{ip}:{port}"
+                try:
+                    r = requests.get(url, timeout=3, verify=False)
+                    registro["headers_ausentes"] = verificar_headers_seguranca(r.headers)
+                    registro["metodos_perigosos"] = verificar_metodos_http(url)
+                    registro["diretorios"] = enumerar_diretorios(url)
+                except: pass
             resultados.append(registro)
         s.close()
     return resultados
 
-def scan_sqli(url):
+def verificar_headers_seguranca(h):
+    f_h = h.keys()
+    essenciais = ["X-Frame-Options", "Content-Security-Policy", "X-Content-Type-Options", "Strict-Transport-Security"]
+    return [item for item in essenciais if item not in f_h]
+
+def verificar_metodos_http(url):
+    ativos = []
+    for m in DANGEROUS_METHODS:
+        try:
+            r = requests.request(m, url, timeout=2, verify=False)
+            if r.status_code != 405: ativos.append(m)
+        except: pass
+    return ativos
+
+def enumerar_diretorios(url):
+    achados = []
+    for p in SENSITIVE_PATHS:
+        try:
+            r = requests.get(url + p, timeout=2, verify=False)
+            if r.status_code in [200, 301, 302, 403]:
+                achados.append(f"{p} ({r.status_code})")
+        except: continue
+    return achados
+
+def scan_sqli(url_completa):
+    if "http" not in url_completa: return []
+    print(f"[*] Testando injeção SQL em {url_completa}...")
     vulneraveis = []
-    parsed = urlparse(url)
+    parsed = urlparse(url_completa)
+    if not parsed.query: return []
+    
     base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    if not parsed.query: return vulneraveis
     params = parsed.query.split("&")
     for p in params:
         key = p.split("=")[0]
         for payload in SQLI_TESTS:
-            test_url = f"{base}?{key}={payload}"
             try:
-                r = requests.get(test_url, timeout=3)
-                if "error" in r.text.lower() or "sql" in r.text.lower():
-                    vulneraveis.append(f"Parâmetro '{key}' vulnerável a SQLi (payload: {payload})")
+                r = requests.get(f"{base}?{key}={payload}", timeout=4)
+                if any(err in r.text.lower() for err in ["sql syntax", "mysql_fetch", "sqlite3", "psycopg2"]):
+                    vulneraveis.append(f"Parâmetro '{key}' vulnerável com payload: {payload}")
                     break
             except: continue
     return vulneraveis
 
-def calcular_score(resultados):
-    score = 0
-    for r in resultados:
-        if r["porta"] == 23: score += 50
-        elif r["porta"] == 80: score += 20
-        if "metodos_http_perigosos" in r and r["metodos_http_perigosos"]: score += 20
-    return min(score, 100)
+# -------------------- GERAÇÃO DE RELATÓRIO PDF --------------------
 
-def resumo_executivo(ip, resultados):
-    risco = "BAIXO"
-    for r in resultados:
-        if r["porta"] == 23: risco = "ALTO"; break
-        elif r["porta"] == 80: risco = "MÉDIO"
-    score = calcular_score(resultados)
-    return risco, score
-
-# -------------------- PDF ATUALIZADO (FUSÃO) --------------------
-def gerar_pdf(ip, resultados, risco, score, sqli=[], subs=[], ssl_info="N/A", techs=[]):
+def gerar_pdf_pro(ip, resultados, sqli, subs, ssl_data, techs):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    data = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{data}.pdf"
-    doc = SimpleDocTemplate(arquivo_pdf, pagesize=A4)
+    nome_arquivo = f"{DOWNLOAD_DIR}/SOC_ARX_AUDIT_{ip}_{datetime.now().strftime('%d%m%Y')}.pdf"
+    doc = SimpleDocTemplate(nome_arquivo, pagesize=A4)
     estilos = getSampleStyleSheet()
     elementos = []
 
-    elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB & REDE</b>", estilos["Title"]))
-    elementos.append(Spacer(1,12))
+    # Título
+    elementos.append(Paragraph("🛡️ SOC-ARX – RELATÓRIO DE INTELIGÊNCIA EM CIBERSEGURANÇA", estilos["Title"]))
+    elementos.append(Spacer(1, 15))
 
-    cor_risco = colors.green if risco == "BAIXO" else colors.orange if risco == "MÉDIO" else colors.red
-    data_tabela = [
-        ['Métrica', 'Valor'],
-        ['IP Analisado', ip],
-        ['Status SSL', ssl_info],
+    # Resumo Executivo
+    score = 0
+    for r in resultados: 
+        if r['porta'] in [23, 445, 3389]: score += 30
+        if r.get('diretorios'): score += 10
+    if sqli: score += 50
+    score = min(score, 100)
+    risco = "CRÍTICO" if score > 70 else "MÉDIO" if score > 30 else "BAIXO"
+
+    data_resumo = [
+        ['Métrica', 'Estado'],
+        ['Host Analisado', ip],
         ['Nível de Risco', risco],
-        ['Score Geral', f"{score}/100"]
+        ['Score de Exposição', f"{score}/100"],
+        ['SSL Status', ssl_data['status']]
     ]
-    t = Table(data_tabela, colWidths=[150, 250])
+    t = Table(data_resumo, colWidths=[150, 250])
     t.setStyle(TableStyle([
-        ('BACKGROUND', (1,3), (1,3), cor_risco),
-        ('TEXTCOLOR', (1,3), (1,3), colors.whitesmoke),
+        ('BACKGROUND', (0,0), (-1,0), colors.black),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.whitesmoke),
+        ('BACKGROUND', (1,2), (1,2), colors.red if risco == "CRÍTICO" else colors.green),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
     ]))
     elementos.append(t)
-    elementos.append(Spacer(1,20))
+    elementos.append(Spacer(1, 20))
 
-    if techs and techs != ["Não identificadas"]:
-        elementos.append(Paragraph("<b>Tecnologias Detectadas:</b>", estilos["Heading2"]))
-        for tech in techs:
-            elementos.append(Paragraph(f"• {tech}", estilos["Normal"]))
-        elementos.append(Spacer(1,12))
+    # Tecnologias
+    if techs:
+        elementos.append(Paragraph("<b>📊 Fingerprinting de Infraestrutura:</b>", estilos["Heading2"]))
+        for tc in techs: elementos.append(Paragraph(f"• {tc}", estilos["Normal"]))
+        elementos.append(Spacer(1, 10))
 
+    # Subdomínios
     if subs:
-        elementos.append(Paragraph("<b>Subdomínios Encontrados:</b>", estilos["Heading2"]))
-        for s in subs:
-            elementos.append(Paragraph(f"• {s['host']} ({s['ip']})", estilos["Normal"]))
-        elementos.append(Spacer(1,12))
+        elementos.append(Paragraph("<b>🌐 Mapeamento de Ativos (DNS):</b>", estilos["Heading2"]))
+        for s in subs: elementos.append(Paragraph(f"• {s['host']} ({s['ip']})", estilos["Normal"]))
+        elementos.append(Spacer(1, 10))
 
-    elementos.append(Paragraph("<b>Resultados de Portas e Serviços:</b>", estilos["Heading2"]))
+    # Vulnerabilidades Técnicas
+    elementos.append(Paragraph("<b>🔍 Detalhes Técnicos e Portas:</b>", estilos["Heading2"]))
     for r in resultados:
-        elementos.append(Paragraph(f"Porta {r['porta']} ({r['servico']})", estilos["Heading3"]))
-        elementos.append(Paragraph(f"Banner: {interpretar_banner(r['porta'], r['banner'])}", estilos["Normal"]))
-        rec = RECOMENDACOES.get(r['porta'], "Monitorar serviço.")
-        elementos.append(Paragraph(f"<i>Dica: {rec}</i>", estilos["Normal"]))
-
-        if r.get("diretorios_sensiveis"):
-            elementos.append(Paragraph(f"Diretórios: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
-        if r.get("headers_seguranca_ausentes"):
-            elementos.append(Paragraph(f"Headers ausentes: {', '.join(r['headers_seguranca_ausentes'])}", estilos["Normal"]))
-        elementos.append(Spacer(1,8))
+        elementos.append(Paragraph(f"Porta {r['porta']} - {r['servico']}", estilos["Heading3"]))
+        elementos.append(Paragraph(f"<i>Recomendação: {RECOMENDACOES.get(r['porta'], 'Manter monitoramento ativo.')}</i>", estilos["Normal"]))
+        if r.get('diretorios'):
+            elementos.append(Paragraph(f"<b>Caminhos Expostos:</b> {', '.join(r['diretorios'])}", estilos["Normal"]))
+        elementos.append(Spacer(1, 5))
 
     if sqli:
-        elementos.append(Spacer(1,12))
-        elementos.append(Paragraph("<b>SQL Injection detectada:</b>", estilos["Heading2"]))
-        for vuln in sqli:
-            elementos.append(Paragraph(vuln, estilos["Normal"]))
+        elementos.append(Paragraph("<b>⚠️ Vulnerabilidades de Aplicação (SQLi):</b>", estilos["Heading2"]))
+        for v in sqli: elementos.append(Paragraph(f"• {v}", estilos["Normal"]))
 
     doc.build(elementos)
-    print(f"\n📄 PDF PRO salvo em: {arquivo_pdf}")
+    print(f"\n[SUCCESS] Relatório Profissional: {nome_arquivo}")
 
-# -------------------- MAIN --------------------
+# -------------------- EXECUÇÃO PRINCIPAL --------------------
+
 if __name__ == "__main__":
-    alvo_input = input("IP ou URL alvo: ").strip()
-    alvo_limpo = alvo_input.replace("http://", "").replace("https://", "").split('/')[0]
-
-    if not ping_host(alvo_limpo):
-        print("Host inativo."); exit()
-
-    subdominios = scan_subdominios(alvo_limpo) if "." in alvo_limpo else []
-    resultados = scan_host(alvo_limpo)
-    sqli_vulns = scan_sqli(alvo_input) if "http" in alvo_input else []
+    print("""
+    #########################################
+    #       SOC-ARX PROFESSIONAL V3.0       #
+    #    Security Operations Command        #
+    #########################################
+    """)
     
-    # Novas chamadas integradas
-    ssl_status = verificar_ssl(alvo_limpo) if "." in alvo_limpo else "N/A"
-    tecnologias = detectar_tecnologias(f"http://{alvo_limpo}") if "." in alvo_limpo else []
+    alvo_raw = input("Digite o Alvo (IP ou URL): ").strip()
+    dominio = alvo_raw.replace("http://", "").replace("https://", "").split('/')[0]
 
-    risco, score = resumo_executivo(alvo_limpo, resultados)
-    gerar_pdf(alvo_limpo, resultados, risco, score, sqli_vulns, subdominios, ssl_status, tecnologias)
+    if not ping_host(dominio):
+        print("[!] Host Offline. Abortando..."); exit()
+
+    # Fluxo de Trabalho
+    sub_encontrados = scan_subdominios(dominio) if "." in dominio else []
+    ssl_info = verificar_ssl(dominio) if "." in dominio else {"status": "N/A"}
+    tecnologias = detectar_tecnologias(f"http://{dominio}")
+    resultados_portas = scan_host_completo(dominio)
+    vulnerabilidades_sql = scan_sqli(alvo_raw)
+
+    # Geração do PDF Final
+    gerar_pdf_pro(dominio, resultados_portas, vulnerabilidades_sql, sub_encontrados, ssl_info, tecnologias)
