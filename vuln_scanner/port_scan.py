@@ -2,7 +2,7 @@ import socket
 import os
 import requests
 import ssl
-import uuid
+import subprocess
 import urllib3
 import time
 import sys
@@ -10,7 +10,7 @@ from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict
 
-# --- SUPORTE A PDF NO TERMUX ---
+# --- SUPORTE A PDF ---
 try:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     from reportlab.lib.pagesizes import A4
@@ -24,32 +24,14 @@ except ImportError:
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CORES E ESTILO ---
-G = '\033[92m' # Verde
-Y = '\033[93m' # Amarelo
-R = '\033[91m' # Vermelho
-C = '\033[96m' # Ciano
-B = '\033[1m'  # Negrito
-E = '\033[0m'  # Reset
+G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\033[0m'
 
-# --- CAMINHO DE DOWNLOAD ---
 DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
-if not os.path.exists(DOWNLOAD_PATH):
-    os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+if not os.path.exists(DOWNLOAD_PATH): os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# --- BANCO DE CONHECIMENTO ---
-SCAN_PORTS = [21, 22, 23, 25, 53, 80, 110, 139, 143, 443, 445, 1433, 3306, 3389, 5432, 8080, 8443, 9000]
-
-DB_VULNS = {
-    21: {"servico": "FTP", "risco": "ALTO", "obs": "Dados em texto claro. Risco de Sniffing."},
-    22: {"servico": "SSH", "risco": "BAIXO", "obs": "Serviço seguro. Verifique força bruta."},
-    23: {"servico": "Telnet", "risco": "CRÍTICO", "obs": "Protocolo obsoleto. Use SSH."},
-    80: {"servico": "HTTP", "risco": "MÉDIO", "obs": "Falta de criptografia SSL/TLS."},
-    443: {"servico": "HTTPS", "risco": "BAIXO", "obs": "Web Segura."},
-    445: {"servico": "SMB", "risco": "CRÍTICO", "obs": "Vulnerável a Ransomware (WannaCry)."},
-    1433: {"servico": "MSSQL", "risco": "ALTO", "obs": "DB exposto diretamente."},
-    3306: {"servico": "MySQL", "risco": "ALTO", "obs": "DB exposto. Risco de vazamento."},
-    3389: {"servico": "RDP", "risco": "CRÍTICO", "obs": "Alvo de BlueKeep e Brute Force."},
-}
+# --- CONFIGURAÇÕES DE SCAN ---
+SCAN_PORTS = [21, 22, 23, 25, 53, 80, 110, 443, 445, 1433, 3306, 3389, 8080, 9000]
+SENSITIVE_FILES = ["/robots.txt", "/.env", "/package.json", "/ftp/", "/admin/", "/.git/config"]
 
 # -------------------- MOTOR TÉCNICO --------------------
 
@@ -62,7 +44,7 @@ def logo():
     ╚════██║██║   ██║██║     ╚════╝  ██╔══██║██╔══██╗ ██╔██╗ 
     ███████║╚██████╔╝╚██████╗        ██║  ██║██║  ██║██╔╝ ██╗
     ╚══════╝ ╚═════╝  ╚═════╝        ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-             {R}V4.5 - CYBERSECURITY OPERATIONS CENTER{E}
+             {R}V6.0 - FULL ORCHESTRATOR & STUDY MODE{E}
     """)
 
 def progress_bar(it, total, prefix='', length=30):
@@ -72,110 +54,97 @@ def progress_bar(it, total, prefix='', length=30):
     sys.stdout.write(f'\r{prefix} |{C}{bar}{E}| {percent}% ')
     sys.stdout.flush()
 
-def get_banner(ip, port):
+def run_nmap_scan(target):
+    print(f"\n{B}{Y}[NMAP] Executando diagnóstico de serviços...{E}")
     try:
-        s = socket.socket()
-        s.settimeout(1.0)
-        s.connect((ip, port))
-        if port in [80, 8080, 443]:
-            s.send(b"HEAD / HTTP/1.1\r\nHost: localhost\r\n\r\n")
-        banner = s.recv(1024).decode(errors='ignore').strip()
-        return banner[:150] if banner else "Oculto"
-    except: return "N/A"
+        cmd = ["nmap", "-sV", "-T4", "-F", target]
+        return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    except: return "Erro ao chamar Nmap."
 
-def analyze_headers(url):
-    findings = []
+def analyze_web_intelligence(url):
+    results = {"cookies": [], "files": [], "tech": "Oculta", "headers": []}
     try:
         r = requests.get(url, timeout=5, verify=False)
-        headers = r.headers
-        sec_h = {
-            "Strict-Transport-Security": "HSTS ausente",
-            "Content-Security-Policy": "CSP ausente",
-            "X-Frame-Options": "Anti-Clickjacking ausente"
-        }
-        for h, msg in sec_h.items():
-            if h not in headers: findings.append(f"{h}: {msg}")
-        return findings, headers.get("Server", "Oculto")
-    except: return [], "Erro"
+        results['tech'] = r.headers.get("Server", "Não detectada")
+        
+        # Cookies & Flags (OWASP Study)
+        for cookie in r.cookies:
+            flags = []
+            if not cookie.has_nonstandard_attr('HttpOnly'): flags.append("Sem HttpOnly")
+            if not cookie.secure: flags.append("Sem Secure")
+            results['cookies'].append(f"{cookie.name}: {'Seguro' if not flags else ' | '.join(flags)}")
 
-def check_ssl(hostname):
-    try:
-        ctx = ssl.create_default_context()
-        with socket.create_connection((hostname, 443), timeout=5) as sock:
-            with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
-                cert = ssock.getpeercert()
-                return "Protegido", cert.get('notAfter')
-    except: return "Inseguro", "N/A"
+        # Path Discovery
+        for path in SENSITIVE_FILES:
+            test_url = urljoin(url, path)
+            if requests.get(test_url, timeout=2, verify=False).status_code == 200:
+                results['files'].append(path)
+    except: pass
+    return results
 
-# -------------------- GERADOR DE PDF --------------------
+# -------------------- RELATÓRIO PDF --------------------
 
-def export_pdf(target, open_ports, web_vulns, ssl_info, server_info):
+def export_pdf(target, nmap_data, web_intel):
     if not PDF_OK: return
-    filename = f"{DOWNLOAD_PATH}/SCAN_{target.replace('.', '_')}.pdf"
-    doc = SimpleDocTemplate(filename, pagesize=A4)
+    path = f"{DOWNLOAD_PATH}/SOC_FULL_SCAN_{target.replace('.', '_')}.pdf"
+    doc = SimpleDocTemplate(path, pagesize=A4)
     styles = getSampleStyleSheet()
-    styles.add(ParagraphStyle(name='SOC_Title', alignment=TA_CENTER, fontSize=22, textColor=colors.darkblue, spaceAfter=20))
     
     elements = []
-    elements.append(Paragraph("🛡️ SOC-ARX AUDIT REPORT", styles['SOC_Title']))
-    elements.append(Paragraph(f"<b>Alvo:</b> {target} | <b>Data:</b> {datetime.now().strftime('%d/%m/%Y')}", styles['Normal']))
-    elements.append(Spacer(1, 20))
+    elements.append(Paragraph(f"🛡️ SOC-ARX FULL AUDIT: {target}", styles['Heading1']))
+    elements.append(Paragraph(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['Normal']))
+    
+    # Seção Web
+    elements.append(Spacer(1, 15))
+    elements.append(Paragraph("1. Inteligência de Aplicação (Python/OWASP)", styles['Heading2']))
+    elements.append(Paragraph(f"<b>Servidor:</b> {web_intel['tech']}", styles['Normal']))
+    
+    elements.append(Paragraph("<b>Diretórios Detectados:</b>", styles['Normal']))
+    for f in web_intel['files']: elements.append(Paragraph(f"• {f}", styles['Normal']))
+    
+    elements.append(Paragraph("<b>Segurança de Cookies:</b>", styles['Normal']))
+    for c in web_intel['cookies']: elements.append(Paragraph(f"• {c}", styles['Normal']))
 
-    elements.append(Paragraph("1. Portas Detectadas", styles['Heading2']))
-    p_data = [["Porta", "Serviço", "Risco", "Observação"]]
-    for p in open_ports:
-        v = DB_VULNS.get(p['num'], {"servico": "Unk", "risco": "BAIXO", "obs": "Monitorar."})
-        p_data.append([str(p['num']), v['servico'], v['risco'], v['obs']])
-    
-    pt = Table(p_data, colWidths=[50, 80, 70, 250])
-    pt.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.darkblue),('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke),('GRID',(0,0),(-1,-1),0.5,colors.grey)]))
-    elements.append(pt)
-    
-    elements.append(Spacer(1, 20))
-    elements.append(Paragraph("2. Segurança Web", styles['Heading2']))
-    elements.append(Paragraph(f"Servidor: {server_info} | SSL: {ssl_info[0]}", styles['Normal']))
-    for v in web_vulns: elements.append(Paragraph(f"• {v}", styles['Normal']))
+    # Seção Nmap
+    elements.append(PageBreak())
+    elements.append(Paragraph("2. Auditoria de Rede Profunda (Nmap Output)", styles['Heading2']))
+    nmap_style = ParagraphStyle('Mono', fontName='Courier', fontSize=7, leading=9)
+    for line in nmap_data.split('\n'):
+        elements.append(Paragraph(line.replace(' ', '&nbsp;'), nmap_style))
 
     doc.build(elements)
-    return filename
+    return path
 
-# -------------------- EXECUÇÃO --------------------
+# -------------------- MAIN --------------------
 
 def main():
     logo()
-    target = input(f"{B}{Y}❯ TARGET_ID (IP/Dominio): {E}").strip()
+    target = input(f"{B}{Y}❯ TARGET_ID (IP/URL): {E}").strip()
     if not target: return
 
-    print(f"\n{C}[*] INICIANDO PROTOCOLO EM: {target}{E}")
+    # 1. Scan Rápido e Barra de Progresso
+    print(f"\n{C}[*] Analisando Infraestrutura Básica...{E}")
+    for i in range(1, 11):
+        time.sleep(0.1)
+        progress_bar(i, 10, prefix='[STATUS]')
     
-    ssl_res = check_ssl(target)
-    open_ports = []
+    # 2. Inteligência Web
+    web_intel = analyze_web_intelligence(f"http://{target}")
     
-    total = len(SCAN_PORTS)
-    for i, port in enumerate(SCAN_PORTS):
-        progress_bar(i + 1, total, prefix='[AUDIT]')
-        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(0.5)
-        if s.connect_ex((target, port)) == 0:
-            open_ports.append({"num": port, "banner": get_banner(target, port)})
-        s.close()
+    # 3. Nmap Orquestrado
+    nmap_res = run_nmap_scan(target)
+    
+    # Visualização em Tempo Real (Terminal)
+    print(f"\n\n{B}{'='*50}\nDETALHES DO ALVO\n{'='*50}{E}")
+    print(f"{G}{nmap_res}{E}")
+    
+    if web_intel['files']:
+        print(f"{Y}[!] Arquivos Críticos: {', '.join(web_intel['files'])}{E}")
 
-    web_vulns, server_name = analyze_headers(f"http://{target}")
-
-    # Tabela Visual no Terminal
-    print(f"\n\n{B}{'PORTA':<8} | {'SERVIÇO':<12} | {'ESTADO':<8} | {'RISCO':<10}{E}")
-    print("-" * 50)
-    for p in open_ports:
-        v = DB_VULNS.get(p['num'], {"servico": "Unk", "risco": "BAIXO"})
-        color = R if v['risco'] in ["CRÍTICO", "ALTO"] else Y
-        print(f"{p['num']:<8} | {v['servico']:<12} | {G}{'OPEN':<8}{E} | {color}{v['risco']:<10}{E}")
-
-    if open_ports or web_vulns:
-        path = export_pdf(target, open_ports, web_vulns, ssl_res, server_name)
-        print(f"\n{G}[✔] RELATÓRIO PDF GERADO: {path}{E}\n")
-    else:
-        print(f"\n{R}[!] Alvo aparentemente seguro.{E}")
+    # 4. Gerar Relatório
+    path = export_pdf(target, nmap_res, web_intel)
+    print(f"\n{G}[✔] RELATÓRIO COMPLETO GERADO: {path}{E}\n")
 
 if __name__ == "__main__":
     try: main()
-    except KeyboardInterrupt: print("\nProtocolo interrompido.")
+    except KeyboardInterrupt: print("\nEncerrado.")
