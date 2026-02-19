@@ -22,41 +22,40 @@ G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\
 DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
 if not os.path.exists(DOWNLOAD_PATH): os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# Lista expandida para caçar backups (Foco no TestPHP, Altoro e o que você achou no /admin/)
+# Lista expandida incluindo arquivos de ambiente Windows (ASP.NET) que você encontrou
 SENSITIVE_FILES = [
     "/robots.txt", "/.env", "/admin/", "/api/v1/users", 
     "/config.php", "/db.sql", "/backup.sql", "/setup.sql", 
     "/.git/", "/phpinfo.php", "/index.php.bak", "/.sql",
-    "/credentials.txt", "/db_backup.sql"
+    "/credentials.txt", "/db_backup.sql", "/web.config", 
+    "/login.aspx", "/aspnet_client/"
 ]
 
 LABS = {
     "1": ("OWASP Juice Shop", "juice-shop.herokuapp.com"),
     "2": ("Altoro Mutual (Banco)", "demo.testfire.net"),
     "3": ("Test PHP (VulnWeb)", "testphp.vulnweb.com"),
-    "4": ("Minha Câmera (Estudo IP)", "200.x.x.x") 
+    "4": ("Test ASP.NET (Windows)", "testaspnet.vulnweb.com"),
+    "5": ("Minha Câmera (Estudo IP)", "200.x.x.x") 
 }
 
 # -------------------- MOTOR TÉCNICO --------------------
 
 def auto_installer():
     """Garante que o ambiente tenha as ferramentas necessárias"""
-    tools = ["nmap"] # Removi whatweb daqui para não travar o script no erro de 'locate'
+    tools = ["nmap"]
     for tool in tools:
         if subprocess.getstatusoutput(f"command -v {tool}")[0] != 0:
             print(f"{Y}[!] Ferramenta {tool} não encontrada. Instalando...{E}")
             os.system(f"pkg install {tool} -y")
 
 def check_vpn():
-    """Verifica VPN com suporte a IPv4 e IPv6 (Correção para o seu caso)"""
+    """Verifica VPN com suporte a IPv4 e IPv6"""
     try:
-        # Usa ipify que detecta tanto v4 quanto v6 de forma universal
         ip = requests.get("https://api64.ipify.org", timeout=5).text
-        # Se contiver ':', é IPv6. Se tiver a 'chave' da VPN ativa, está seguro.
         if ":" in ip:
             status = f"{G}PROTEGIDA (IPv6/VPN){E}"
         else:
-            # Tenta verificar se o ISP é de uma VPN conhecida
             r = requests.get(f"https://ipapi.co/{ip}/json/", timeout=5).json()
             org = r.get("org", "").lower()
             is_vpn = any(v in org for v in ["nord", "proton", "express", "surfshark", "google", "cloud", "mullvad"])
@@ -82,7 +81,6 @@ def analyze_web_intelligence(url):
     
     try:
         domain = urlparse(url).netloc
-        # Detecção de Cloud e Telnet
         try:
             ip = socket.gethostbyname(domain)
             results['telnet'] = get_telnet_banner(ip)
@@ -92,7 +90,6 @@ def analyze_web_intelligence(url):
             else: results['cloud'] = f"Independente ({hostname})"
         except: results['cloud'] = "Não identificado"
 
-        # WhatWeb Intelligence - Agora com tratamento de erro silencioso
         try:
             results['tech'] = subprocess.check_output(["whatweb", "--color=never", url], stderr=subprocess.DEVNULL).decode().strip()
         except:
@@ -101,7 +98,6 @@ def analyze_web_intelligence(url):
         session = requests.Session()
         r = session.get(url, timeout=5, verify=False, headers=headers)
         
-        # Auditoria de Cookies
         if session.cookies:
             for cookie in session.cookies:
                 flags = []
@@ -109,7 +105,6 @@ def analyze_web_intelligence(url):
                 if not cookie.secure: flags.append("Sem Secure")
                 results['cookies'].append(f"{cookie.name}: {'Seguro' if not flags else ' | '.join(flags)}")
 
-        # Path Discovery (Caçador de arquivos críticos que você achou)
         for path in SENSITIVE_FILES:
             test_url = urljoin(url, path)
             try:
@@ -126,12 +121,11 @@ def analyze_web_intelligence(url):
 def run_nmap_scan(target):
     print(f"\n{B}{Y}[NMAP] Iniciando varredura profunda...{E}")
     try:
-        # -Pn incluído por padrão para não travar em firewalls de câmeras/sites
         cmd = ["nmap", "-sV", "-T4", "-F", "-Pn", target]
         return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
     except: return "Nmap falhou ou não está no PATH."
 
-# -------------------- RELATÓRIO PDF (Mantido conforme solicitado) --------------------
+# -------------------- RELATÓRIO PDF --------------------
 
 def export_pdf(target, nmap_data, web_intel):
     if not PDF_OK: return
