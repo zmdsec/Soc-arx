@@ -1,4 +1,4 @@
-import socket, os, requests, ssl, subprocess, urllib3, time, sys
+import socket, os, requests, ssl, subprocess, urllib3, time, sys, random
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict
@@ -19,13 +19,13 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- CORES E ESTILO ---
 G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\033[0m'
 
-# Tenta definir o caminho de download, mas tem um plano B (pasta local)
+# Caminho de download com plano B
 DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
 try:
     if not os.path.exists(DOWNLOAD_PATH): 
         os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 except:
-    DOWNLOAD_PATH = os.getcwd() # Se falhar no SDCard, usa a pasta onde o script está
+    DOWNLOAD_PATH = os.getcwd()
 
 SENSITIVE_FILES = [
     "/robots.txt", "/.env", "/admin/", "/api/v1/users", 
@@ -43,6 +43,13 @@ LABS = {
     "5": ("Minha Câmera (Estudo IP)", "200.x.x.x") 
 }
 
+# --- OFUSCAÇÃO: LISTA DE IDENTIDADES (Modo Furtivo) ---
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+    "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 14_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0.3 Mobile/15E148 Safari/604.1"
+]
+
 # -------------------- MOTOR TÉCNICO --------------------
 
 def auto_installer():
@@ -55,10 +62,7 @@ def auto_installer():
 def check_vpn():
     try:
         ip = requests.get("https://api64.ipify.org", timeout=5).text
-        if ":" in ip:
-            status = f"{G}PROTEGIDA (IPv6/VPN){E}"
-        else:
-            status = f"{Y}IPv4 (Verificar Chave VPN){E}"
+        status = f"{G}PROTEGIDA (IPv6/VPN){E}" if ":" in ip else f"{Y}IPv4 (Verificar Chave VPN){E}"
         return ip, status
     except:
         return "Detectado", f"{Y}VERIFICAR CONEXÃO{E}"
@@ -73,9 +77,24 @@ def get_telnet_banner(target):
         return banner if banner else "Porta 23 aberta"
     except: return None
 
+# NOVO: Sugestão de Exploração baseada no que foi achado
+def xpl_suggester(tech_info, files_found):
+    print(f"\n{B}{C}🛠️ MÓDULO DE EXPLORAÇÃO (DICAS):{E}")
+    if any(".aspx" in f for f in files_found) or "IIS" in tech_info:
+        print(f"{Y}[!] Windows/MSSQL: Tente 'admin' OR '1'='1' no Login.{E}")
+        print(f"{Y}[!] Payload de Tempo: admin' WAITFOR DELAY '0:0:5'--{E}")
+    elif any(".php" in f for f in files_found) or "Apache" in tech_info:
+        print(f"{G}[!] Linux/MySQL: Tente admin' OR 1=1# ou Union Select.{E}")
+
+# NOVO: Limpeza de rastros locais (Histórico do Termux)
+def stealth_cleanup():
+    print(f"{C}[*] Modo Furtivo: Limpando rastros locais...{E}")
+    os.system("history -c") 
+
 def analyze_web_intelligence(url):
     results = {"cookies": [], "files": [], "tech": "Oculta", "cloud": "Verificando...", "telnet": None}
-    headers = {'User-Agent': 'Mozilla/5.0 SOC-ARX-V7.6'}
+    # Seleciona uma identidade aleatória para o scan
+    headers = {'User-Agent': random.choice(USER_AGENTS)}
     
     try:
         domain = urlparse(url).netloc
@@ -120,44 +139,33 @@ def run_nmap_scan(target):
 # -------------------- RELATÓRIO PDF --------------------
 
 def export_pdf(target, nmap_data, web_intel):
-    if not PDF_OK: 
-        print(f"{R}[!] Erro: Biblioteca ReportLab não instalada.{E}")
-        return None
-    
-    filename = f"SOC_V76_{target.replace('.', '_')}.pdf"
+    if not PDF_OK: return None
+    filename = f"SOC_V80_{target.replace('.', '_')}.pdf"
     path = os.path.join(DOWNLOAD_PATH, filename)
-    
     try:
         doc = SimpleDocTemplate(path, pagesize=A4)
         styles = getSampleStyleSheet()
         elements = []
-        
-        elements.append(Paragraph(f"🛡️ SOC-ARX V7.6 REPORT", styles['Heading1']))
-        elements.append(Paragraph(f"<b>ALVO:</b> {target}", styles['Normal']))
-        elements.append(Paragraph(f"<b>DATA:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['Normal']))
+        elements.append(Paragraph(f"🛡️ SOC-ARX V8.0 STEALTH REPORT", styles['Heading1']))
+        elements.append(Paragraph(f"<b>ALVO:</b> {target} | <b>DATA:</b> {datetime.now()}", styles['Normal']))
         elements.append(Spacer(1, 12))
-        
         elements.append(Paragraph("1. Inteligência Web", styles['Heading2']))
         for f in web_intel['files']: elements.append(Paragraph(f"• {f}", styles['Normal']))
         for c in web_intel['cookies']: elements.append(Paragraph(f"• {c}", styles['Normal']))
-        
         elements.append(PageBreak())
         elements.append(Paragraph("2. Auditoria de Rede (Nmap)", styles['Heading2']))
         nmap_style = ParagraphStyle('Mono', fontName='Courier', fontSize=8)
         for line in nmap_data.split('\n'):
             elements.append(Paragraph(line.replace(' ', '&nbsp;'), nmap_style))
-        
         doc.build(elements)
         return path
-    except Exception as e:
-        print(f"{R}[!] Erro ao gerar PDF: {e}{E}")
-        return None
+    except: return None
 
 # -------------------- MAIN --------------------
 
 def main():
     os.system('clear')
-    print(f"{C}{B}🛡️ SOC-ARX V7.6 - ARMOR & LAB EDITION{E}")
+    print(f"{C}{B}🛡️ SOC-ARX V8.0 - STEALTH & EXPLOIT EDITION{E}")
     auto_installer()
     
     my_ip, vpn_status = check_vpn()
@@ -176,12 +184,12 @@ def main():
     nmap_res = run_nmap_scan(target)
     
     print(f"\n{B}RELATÓRIO PRONTO!{E}")
-    path = export_pdf(target, nmap_res, web_intel)
+    xpl_suggester(nmap_res + web_intel['tech'], web_intel['files'])
     
-    if path:
-        print(f"\n{G}[✔] PDF SALVO EM: {path}{E}\n")
-    else:
-        print(f"\n{Y}[!] O PDF não pôde ser criado. Verifique as permissões.{E}\n")
+    path = export_pdf(target, nmap_res, web_intel)
+    if path: print(f"\n{G}[✔] PDF SALVO EM: {path}{E}")
+    
+    stealth_cleanup() # Limpa rastros antes de sair
 
 if __name__ == "__main__":
     try: main()
