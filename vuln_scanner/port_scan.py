@@ -2,6 +2,7 @@ import socket
 import json
 import os
 import requests
+import ssl # Novo
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
@@ -19,20 +20,42 @@ SENSITIVE_PATHS = ["/admin", "/login", "/wp-admin", "/phpmyadmin", "/dashboard",
 DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS"]
 DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
 SQLI_TESTS = ["'", '"', "' OR 1=1 -- ", '" OR "1"="1']
-# Lista para subdomínios
 SUBDOMAINS_LIST = ["www", "mail", "dev", "test", "api", "admin", "vpn", "ssh", "staging"]
 
-# Dicionário de Recomendações (NOVO)
 RECOMENDACOES = {
     21: "FTP é inseguro. Use SFTP (Porta 22).",
     23: "CRÍTICO: Telnet expõe senhas. Desative e use SSH.",
     80: "HTTP detectado. Instale SSL e use HTTPS (443).",
     "SQLi": "Use 'Prepared Statements' para evitar injeção de comandos.",
     "Headers": "Configure Headers de segurança (HSTS, CSP) no servidor.",
-    "Paths": "Restrinja acesso a diretórios sensíveis via firewall."
+    "Paths": "Restrinja acesso a diretórios sensíveis via firewall.",
+    "SSL": "Certificado SSL inválido ou ausente. Corrija para garantir a criptografia."
 }
 
-# -------------------- UTILIDADES --------------------
+# -------------------- NOVOS MÓDULOS (ADICIONADOS) --------------------
+
+def verificar_ssl(dominio):
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((dominio, 443), timeout=2) as sock:
+            with context.wrap_socket(sock, server_hostname=dominio) as ssock:
+                cert = ssock.getpeercert()
+                validade = cert.get('notAfter')
+                return f"Válido até {validade}"
+    except:
+        return "Inexistente ou Inválido"
+
+def detectar_tecnologias(url):
+    techs = []
+    try:
+        r = requests.get(url, timeout=2)
+        h = r.headers
+        if 'Server' in h: techs.append(f"Servidor: {h['Server']}")
+        if 'X-Powered-By' in h: techs.append(f"Tecnologia: {h['X-Powered-By']}")
+    except: pass
+    return techs if techs else ["Não identificadas"]
+
+# -------------------- UTILIDADES ORIGINAIS --------------------
 def ping_host(ip):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -129,8 +152,6 @@ def interpretar_banner(porta, banner):
         return " | ".join(info)
     return "Serviço ativo (banner genérico)"
 
-# -------------------- NOVOS MÓDULOS --------------------
-
 def scan_subdominios(dominio):
     print(f"[*] Buscando subdomínios em {dominio}...")
     encontrados = []
@@ -144,7 +165,6 @@ def scan_subdominios(dominio):
             continue
     return encontrados
 
-# -------------------- SCANNER ORIGINAL --------------------
 def scan_host(ip):
     resultados = []
     print(f"\nEscaneando {ip}...\n")
@@ -154,11 +174,7 @@ def scan_host(ip):
         if s.connect_ex((ip, port)) == 0:
             service = PORT_SERVICES.get(port, "Desconhecido")
             banner = grab_banner(ip, port)
-            registro = {
-                "porta": port,
-                "servico": service,
-                "banner": banner
-            }
+            registro = {"porta": port, "servico": service, "banner": banner}
             if port in [80, 8080, 443]:
                 headers = coletar_headers_http(ip, port)
                 registro["headers_http"] = headers
@@ -169,13 +185,11 @@ def scan_host(ip):
         s.close()
     return resultados
 
-# -------------------- SQL INJECTION ORIGINAL --------------------
 def scan_sqli(url):
     vulneraveis = []
     parsed = urlparse(url)
     base = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
-    if not parsed.query:
-        return vulneraveis
+    if not parsed.query: return vulneraveis
     params = parsed.query.split("&")
     for p in params:
         key = p.split("=")[0]
@@ -186,33 +200,27 @@ def scan_sqli(url):
                 if "error" in r.text.lower() or "sql" in r.text.lower():
                     vulneraveis.append(f"Parâmetro '{key}' vulnerável a SQLi (payload: {payload})")
                     break
-            except:
-                continue
+            except: continue
     return vulneraveis
 
-# -------------------- RISCO --------------------
 def calcular_score(resultados):
     score = 0
     for r in resultados:
         if r["porta"] == 23: score += 50
         elif r["porta"] == 80: score += 20
-        if "metodos_http_perigosos" in r and r["metodos_http_perigosos"]:
-            score += 20
+        if "metodos_http_perigosos" in r and r["metodos_http_perigosos"]: score += 20
     return min(score, 100)
 
 def resumo_executivo(ip, resultados):
     risco = "BAIXO"
     for r in resultados:
-        if r["porta"] == 23:
-            risco = "ALTO"
-            break
-        elif r["porta"] == 80:
-            risco = "MÉDIO"
+        if r["porta"] == 23: risco = "ALTO"; break
+        elif r["porta"] == 80: risco = "MÉDIO"
     score = calcular_score(resultados)
     return risco, score
 
-# -------------------- PDF ATUALIZADO --------------------
-def gerar_pdf(ip, resultados, risco, score, sqli=[], subs=[]):
+# -------------------- PDF ATUALIZADO (FUSÃO) --------------------
+def gerar_pdf(ip, resultados, risco, score, sqli=[], subs=[], ssl_info="N/A", techs=[]):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     data = datetime.now().strftime("%Y-%m-%d_%H-%M")
     arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{data}.pdf"
@@ -220,57 +228,54 @@ def gerar_pdf(ip, resultados, risco, score, sqli=[], subs=[]):
     estilos = getSampleStyleSheet()
     elementos = []
 
-    # Título Original
     elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB & REDE</b>", estilos["Title"]))
     elementos.append(Spacer(1,12))
 
-    # Tabela de Resumo (NOVO - Visual Premium)
     cor_risco = colors.green if risco == "BAIXO" else colors.orange if risco == "MÉDIO" else colors.red
     data_tabela = [
         ['Métrica', 'Valor'],
         ['IP Analisado', ip],
+        ['Status SSL', ssl_info],
         ['Nível de Risco', risco],
-        ['Score Geral', f"{score}/100"],
-        ['Subdomínios', len(subs)]
+        ['Score Geral', f"{score}/100"]
     ]
     t = Table(data_tabela, colWidths=[150, 250])
     t.setStyle(TableStyle([
-        ('BACKGROUND', (1,2), (1,2), cor_risco),
-        ('TEXTCOLOR', (1,2), (1,2), colors.whitesmoke),
+        ('BACKGROUND', (1,3), (1,3), cor_risco),
+        ('TEXTCOLOR', (1,3), (1,3), colors.whitesmoke),
         ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
     ]))
     elementos.append(t)
     elementos.append(Spacer(1,20))
 
-    # Seção de Subdomínios (NOVO)
+    if techs and techs != ["Não identificadas"]:
+        elementos.append(Paragraph("<b>Tecnologias Detectadas:</b>", estilos["Heading2"]))
+        for tech in techs:
+            elementos.append(Paragraph(f"• {tech}", estilos["Normal"]))
+        elementos.append(Spacer(1,12))
+
     if subs:
         elementos.append(Paragraph("<b>Subdomínios Encontrados:</b>", estilos["Heading2"]))
         for s in subs:
             elementos.append(Paragraph(f"• {s['host']} ({s['ip']})", estilos["Normal"]))
         elementos.append(Spacer(1,12))
 
-    # Portas (Original + Recomendações)
     elementos.append(Paragraph("<b>Resultados de Portas e Serviços:</b>", estilos["Heading2"]))
     for r in resultados:
         elementos.append(Paragraph(f"Porta {r['porta']} ({r['servico']})", estilos["Heading3"]))
         elementos.append(Paragraph(f"Banner: {interpretar_banner(r['porta'], r['banner'])}", estilos["Normal"]))
-        
-        # Adiciona Recomendação (NOVO)
-        rec = RECOMENDACOES.get(r['porta'], "Nenhuma recomendação específica.")
+        rec = RECOMENDACOES.get(r['porta'], "Monitorar serviço.")
         elementos.append(Paragraph(f"<i>Dica: {rec}</i>", estilos["Normal"]))
 
         if r.get("diretorios_sensiveis"):
             elementos.append(Paragraph(f"Diretórios: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
         if r.get("headers_seguranca_ausentes"):
             elementos.append(Paragraph(f"Headers ausentes: {', '.join(r['headers_seguranca_ausentes'])}", estilos["Normal"]))
-            elementos.append(Paragraph(f"<i>Dica: {RECOMENDACOES['Headers']}</i>", estilos["Normal"]))
         elementos.append(Spacer(1,8))
 
-    # SQL Injection (Original)
     if sqli:
         elementos.append(Spacer(1,12))
         elementos.append(Paragraph("<b>SQL Injection detectada:</b>", estilos["Heading2"]))
-        elementos.append(Paragraph(f"<i>Dica: {RECOMENDACOES['SQLi']}</i>", estilos["Normal"]))
         for vuln in sqli:
             elementos.append(Paragraph(vuln, estilos["Normal"]))
 
@@ -283,33 +288,15 @@ if __name__ == "__main__":
     alvo_limpo = alvo_input.replace("http://", "").replace("https://", "").split('/')[0]
 
     if not ping_host(alvo_limpo):
-        print("Host inativo ou inacessível. Verifique a rede.")
-        exit()
+        print("Host inativo."); exit()
 
-    # Executa buscas
     subdominios = scan_subdominios(alvo_limpo) if "." in alvo_limpo else []
     resultados = scan_host(alvo_limpo)
     sqli_vulns = scan_sqli(alvo_input) if "http" in alvo_input else []
-
-    if not resultados and not sqli_vulns and not subdominios:
-        print("Nenhuma informação encontrada.")
-        exit()
+    
+    # Novas chamadas integradas
+    ssl_status = verificar_ssl(alvo_limpo) if "." in alvo_limpo else "N/A"
+    tecnologias = detectar_tecnologias(f"http://{alvo_limpo}") if "." in alvo_limpo else []
 
     risco, score = resumo_executivo(alvo_limpo, resultados)
-    
-    # Gera o PDF com tudo
-    gerar_pdf(alvo_limpo, resultados, risco, score, sqli_vulns, subdominios)
-
-    # JSON original atualizado
-    with open(f"{DOWNLOAD_DIR}/relatorio_{alvo_limpo}.json","w") as f:
-        json.dump({
-            "ip": alvo_limpo,
-            "data": str(datetime.now()),
-            "risco": risco,
-            "score": score,
-            "subdominios": subdominios,
-            "resultados": resultados,
-            "sql_injection": sqli_vulns
-        }, f, indent=4)
-
-    print("\n✅ Auditoria completa gerada com sucesso.")
+    gerar_pdf(alvo_limpo, resultados, risco, score, sqli_vulns, subdominios, ssl_status, tecnologias)
