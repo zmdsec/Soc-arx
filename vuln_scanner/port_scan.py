@@ -29,85 +29,97 @@ G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\
 DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
 if not os.path.exists(DOWNLOAD_PATH): os.makedirs(DOWNLOAD_PATH, exist_ok=True)
 
-# --- CONFIGURAÇÕES DE SCAN ---
-SCAN_PORTS = [21, 22, 23, 25, 53, 80, 110, 443, 445, 1433, 3306, 3389, 8080, 9000]
-SENSITIVE_FILES = ["/robots.txt", "/.env", "/package.json", "/ftp/", "/admin/", "/.git/config"]
+SENSITIVE_FILES = ["/robots.txt", "/.env", "/package.json", "/ftp/", "/admin/", "/api/v1/users"]
 
 # -------------------- MOTOR TÉCNICO --------------------
 
-def logo():
-    os.system('clear')
-    print(f"""{C}
-    ███████╗ ██████╗  ██████╗         █████╗ ██████╗ ██╗  ██╗
-    ██╔════╝██╔═══██╗██╔════╝        ██╔══██╗██╔══██╗╚██╗██╔╝
-    ███████╗██║   ██║██║     █████╗  ███████║██████╔╝ ╚███╔╝ 
-    ╚════██║██║   ██║██║     ╚════╝  ██╔══██║██╔══██╗ ██╔██╗ 
-    ███████║╚██████╔╝╚██████╗        ██║  ██║██║  ██║██╔╝ ██╗
-    ╚══════╝ ╚═════╝  ╚═════╝        ╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝
-             {R}V6.0 - FULL ORCHESTRATOR & STUDY MODE{E}
-    """)
-
-def progress_bar(it, total, prefix='', length=30):
-    percent = ("{0:.1f}").format(100 * (it / float(total)))
-    filled = int(length * it // total)
-    bar = '█' * filled + '-' * (length - filled)
-    sys.stdout.write(f'\r{prefix} |{C}{bar}{E}| {percent}% ')
-    sys.stdout.flush()
-
-def run_nmap_scan(target):
-    print(f"\n{B}{Y}[NMAP] Executando diagnóstico de serviços...{E}")
+def get_cloud_provider(target):
+    """Detecta se o alvo está na AWS, Google ou Heroku"""
     try:
-        cmd = ["nmap", "-sV", "-T4", "-F", target]
-        return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
-    except: return "Erro ao chamar Nmap."
+        ip = socket.gethostbyname(target)
+        hostname = socket.gethostbyaddr(ip)[0]
+        if "amazonaws" in hostname: return "Amazon AWS"
+        if "heroku" in hostname: return "Heroku Cloud"
+        if "google" in hostname: return "Google Cloud"
+        return f"Provedor Independente ({hostname})"
+    except:
+        return "Desconhecido"
 
 def analyze_web_intelligence(url):
-    results = {"cookies": [], "files": [], "tech": "Oculta", "headers": []}
+    """Coleta Cookies e Diretórios simulando um navegador real"""
+    results = {"cookies": [], "files": [], "tech": "Oculta", "cloud": "Verificando..."}
+    
+    # Headers para evitar bloqueio do Heroku/AWS
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'
+    }
+    
     try:
-        r = requests.get(url, timeout=5, verify=False)
-        results['tech'] = r.headers.get("Server", "Não detectada")
+        domain = urlparse(url).netloc
+        results['cloud'] = get_cloud_provider(domain)
         
-        # Cookies & Flags (OWASP Study)
-        for cookie in r.cookies:
-            flags = []
-            if not cookie.has_nonstandard_attr('HttpOnly'): flags.append("Sem HttpOnly")
-            if not cookie.secure: flags.append("Sem Secure")
-            results['cookies'].append(f"{cookie.name}: {'Seguro' if not flags else ' | '.join(flags)}")
+        # Uso de Session para persistência de cookies
+        session = requests.Session()
+        r = session.get(url, timeout=5, verify=False, headers=headers)
+        
+        results['tech'] = r.headers.get("Server", r.headers.get("Via", "Não detectada"))
+        
+        # Auditoria de Cookies
+        if session.cookies:
+            for cookie in session.cookies:
+                flags = []
+                if not cookie.has_nonstandard_attr('HttpOnly'): flags.append("Sem HttpOnly (Risco XSS)")
+                if not cookie.secure: flags.append("Sem Secure (Risco Sniffing)")
+                results['cookies'].append(f"{cookie.name}: {'Seguro' if not flags else ' | '.join(flags)}")
+        else:
+            results['cookies'].append("Nenhum cookie detectado na raiz.")
 
         # Path Discovery
         for path in SENSITIVE_FILES:
             test_url = urljoin(url, path)
-            if requests.get(test_url, timeout=2, verify=False).status_code == 200:
-                results['files'].append(path)
-    except: pass
+            try:
+                res = session.get(test_url, timeout=2, verify=False, headers=headers)
+                if res.status_code == 200:
+                    results['files'].append(f"{path} (Acesso Livre)")
+                elif res.status_code == 403:
+                    results['files'].append(f"{path} (Privado/Protegido)")
+            except: continue
+    except Exception as e:
+        results['tech'] = f"Erro: {str(e)}"
     return results
+
+def run_nmap_scan(target):
+    print(f"\n{B}{Y}[NMAP] Orquestrando diagnóstico de serviços...{E}")
+    try:
+        cmd = ["nmap", "-sV", "-T4", "-F", target]
+        return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    except: return "Nmap falhou ou não instalado."
 
 # -------------------- RELATÓRIO PDF --------------------
 
 def export_pdf(target, nmap_data, web_intel):
     if not PDF_OK: return
-    path = f"{DOWNLOAD_PATH}/SOC_FULL_SCAN_{target.replace('.', '_')}.pdf"
+    path = f"{DOWNLOAD_PATH}/SOC_V65_{target.replace('.', '_')}.pdf"
     doc = SimpleDocTemplate(path, pagesize=A4)
     styles = getSampleStyleSheet()
     
     elements = []
-    elements.append(Paragraph(f"🛡️ SOC-ARX FULL AUDIT: {target}", styles['Heading1']))
-    elements.append(Paragraph(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['Normal']))
+    elements.append(Paragraph(f"🛡️ SOC-ARX INTELLIGENCE REPORT", styles['Heading1']))
+    elements.append(Paragraph(f"<b>ALVO:</b> {target} | <b>DATA:</b> {datetime.now().strftime('%d/%m/%Y %H:%M')}", styles['Normal']))
+    elements.append(Paragraph(f"<b>INFRAESTRUTURA:</b> {web_intel['cloud']}", styles['Normal']))
     
-    # Seção Web
     elements.append(Spacer(1, 15))
-    elements.append(Paragraph("1. Inteligência de Aplicação (Python/OWASP)", styles['Heading2']))
+    elements.append(Paragraph("1. Inteligência Web (OWASP)", styles['Heading2']))
     elements.append(Paragraph(f"<b>Servidor:</b> {web_intel['tech']}", styles['Normal']))
     
-    elements.append(Paragraph("<b>Diretórios Detectados:</b>", styles['Normal']))
+    elements.append(Paragraph("<b>Diretórios e Arquivos:</b>", styles['Normal']))
     for f in web_intel['files']: elements.append(Paragraph(f"• {f}", styles['Normal']))
     
-    elements.append(Paragraph("<b>Segurança de Cookies:</b>", styles['Normal']))
+    elements.append(Paragraph("<b>Auditoria de Cookies:</b>", styles['Normal']))
     for c in web_intel['cookies']: elements.append(Paragraph(f"• {c}", styles['Normal']))
 
-    # Seção Nmap
     elements.append(PageBreak())
-    elements.append(Paragraph("2. Auditoria de Rede Profunda (Nmap Output)", styles['Heading2']))
+    elements.append(Paragraph("2. Auditoria de Rede (Nmap Output)", styles['Heading2']))
     nmap_style = ParagraphStyle('Mono', fontName='Courier', fontSize=7, leading=9)
     for line in nmap_data.split('\n'):
         elements.append(Paragraph(line.replace(' ', '&nbsp;'), nmap_style))
@@ -118,32 +130,22 @@ def export_pdf(target, nmap_data, web_intel):
 # -------------------- MAIN --------------------
 
 def main():
-    logo()
-    target = input(f"{B}{Y}❯ TARGET_ID (IP/URL): {E}").strip()
+    os.system('clear')
+    print(f"{C}{B}SOC-ARX V6.5 - ORQUESTRADOR TÁTICO{E}")
+    target = input(f"\n{B}{Y}❯ TARGET_ID (IP/URL): {E}").strip()
     if not target: return
 
-    # 1. Scan Rápido e Barra de Progresso
-    print(f"\n{C}[*] Analisando Infraestrutura Básica...{E}")
-    for i in range(1, 11):
-        time.sleep(0.1)
-        progress_bar(i, 10, prefix='[STATUS]')
-    
-    # 2. Inteligência Web
+    print(f"\n{C}[*] Coletando inteligência web...{E}")
     web_intel = analyze_web_intelligence(f"http://{target}")
     
-    # 3. Nmap Orquestrado
     nmap_res = run_nmap_scan(target)
     
-    # Visualização em Tempo Real (Terminal)
-    print(f"\n\n{B}{'='*50}\nDETALHES DO ALVO\n{'='*50}{E}")
-    print(f"{G}{nmap_res}{E}")
+    print(f"\n{B}{'='*50}\nRESUMO TÁTICO: {target}\n{'='*50}{E}")
+    print(f"{B}Nuvem:{E} {web_intel['cloud']}")
+    print(f"{B}Arquivos Encontrados:{E} {len(web_intel['files'])}")
     
-    if web_intel['files']:
-        print(f"{Y}[!] Arquivos Críticos: {', '.join(web_intel['files'])}{E}")
-
-    # 4. Gerar Relatório
     path = export_pdf(target, nmap_res, web_intel)
-    print(f"\n{G}[✔] RELATÓRIO COMPLETO GERADO: {path}{E}\n")
+    print(f"\n{G}[✔] RELATÓRIO GERADO: {path}{E}\n")
 
 if __name__ == "__main__":
     try: main()
