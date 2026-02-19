@@ -19,6 +19,18 @@ SENSITIVE_PATHS = ["/admin", "/login", "/wp-admin", "/phpmyadmin", "/dashboard",
 DANGEROUS_METHODS = ["PUT", "DELETE", "TRACE", "OPTIONS"]
 DOWNLOAD_DIR = "/storage/emulated/0/Download/Soc-Arx"
 SQLI_TESTS = ["'", '"', "' OR 1=1 -- ", '" OR "1"="1']
+# Lista para subdomínios
+SUBDOMAINS_LIST = ["www", "mail", "dev", "test", "api", "admin", "vpn", "ssh", "staging"]
+
+# Dicionário de Recomendações (NOVO)
+RECOMENDACOES = {
+    21: "FTP é inseguro. Use SFTP (Porta 22).",
+    23: "CRÍTICO: Telnet expõe senhas. Desative e use SSH.",
+    80: "HTTP detectado. Instale SSL e use HTTPS (443).",
+    "SQLi": "Use 'Prepared Statements' para evitar injeção de comandos.",
+    "Headers": "Configure Headers de segurança (HSTS, CSP) no servidor.",
+    "Paths": "Restrinja acesso a diretórios sensíveis via firewall."
+}
 
 # -------------------- UTILIDADES --------------------
 def ping_host(ip):
@@ -117,7 +129,22 @@ def interpretar_banner(porta, banner):
         return " | ".join(info)
     return "Serviço ativo (banner genérico)"
 
-# -------------------- SCANNER --------------------
+# -------------------- NOVOS MÓDULOS --------------------
+
+def scan_subdominios(dominio):
+    print(f"[*] Buscando subdomínios em {dominio}...")
+    encontrados = []
+    for sub in SUBDOMAINS_LIST:
+        alvo_sub = f"{sub}.{dominio}"
+        try:
+            ip = socket.gethostbyname(alvo_sub)
+            encontrados.append({"host": alvo_sub, "ip": ip})
+            print(f"  [+] {alvo_sub} -> {ip}")
+        except:
+            continue
+    return encontrados
+
+# -------------------- SCANNER ORIGINAL --------------------
 def scan_host(ip):
     resultados = []
     print(f"\nEscaneando {ip}...\n")
@@ -142,7 +169,7 @@ def scan_host(ip):
         s.close()
     return resultados
 
-# -------------------- SQL INJECTION BÁSICO --------------------
+# -------------------- SQL INJECTION ORIGINAL --------------------
 def scan_sqli(url):
     vulneraveis = []
     parsed = urlparse(url)
@@ -184,8 +211,8 @@ def resumo_executivo(ip, resultados):
     score = calcular_score(resultados)
     return risco, score
 
-# -------------------- PDF SIMPLES --------------------
-def gerar_pdf(ip, resultados, risco, score, sqli=[]):
+# -------------------- PDF ATUALIZADO --------------------
+def gerar_pdf(ip, resultados, risco, score, sqli=[], subs=[]):
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     data = datetime.now().strftime("%Y-%m-%d_%H-%M")
     arquivo_pdf = f"{DOWNLOAD_DIR}/relatorio_{ip}_{data}.pdf"
@@ -193,58 +220,96 @@ def gerar_pdf(ip, resultados, risco, score, sqli=[]):
     estilos = getSampleStyleSheet()
     elementos = []
 
+    # Título Original
     elementos.append(Paragraph("<b>SOC-ARX – RELATÓRIO DE RECON WEB & REDE</b>", estilos["Title"]))
     elementos.append(Spacer(1,12))
-    elementos.append(Paragraph(f"IP analisado: {ip}", estilos["Normal"]))
-    elementos.append(Paragraph(f"Data: {datetime.now()}", estilos["Normal"]))
-    elementos.append(Paragraph(f"Nível de risco: {risco}", estilos["Normal"]))
-    elementos.append(Paragraph(f"Score geral: {score}/100", estilos["Normal"]))
-    elementos.append(Spacer(1,12))
 
+    # Tabela de Resumo (NOVO - Visual Premium)
+    cor_risco = colors.green if risco == "BAIXO" else colors.orange if risco == "MÉDIO" else colors.red
+    data_tabela = [
+        ['Métrica', 'Valor'],
+        ['IP Analisado', ip],
+        ['Nível de Risco', risco],
+        ['Score Geral', f"{score}/100"],
+        ['Subdomínios', len(subs)]
+    ]
+    t = Table(data_tabela, colWidths=[150, 250])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (1,2), (1,2), cor_risco),
+        ('TEXTCOLOR', (1,2), (1,2), colors.whitesmoke),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey)
+    ]))
+    elementos.append(t)
+    elementos.append(Spacer(1,20))
+
+    # Seção de Subdomínios (NOVO)
+    if subs:
+        elementos.append(Paragraph("<b>Subdomínios Encontrados:</b>", estilos["Heading2"]))
+        for s in subs:
+            elementos.append(Paragraph(f"• {s['host']} ({s['ip']})", estilos["Normal"]))
+        elementos.append(Spacer(1,12))
+
+    # Portas (Original + Recomendações)
+    elementos.append(Paragraph("<b>Resultados de Portas e Serviços:</b>", estilos["Heading2"]))
     for r in resultados:
-        elementos.append(Paragraph(f"Porta {r['porta']} ({r['servico']})", estilos["Heading2"]))
-        elementos.append(Paragraph(f"Banner / Info: {interpretar_banner(r['porta'], r['banner'])}", estilos["Normal"]))
+        elementos.append(Paragraph(f"Porta {r['porta']} ({r['servico']})", estilos["Heading3"]))
+        elementos.append(Paragraph(f"Banner: {interpretar_banner(r['porta'], r['banner'])}", estilos["Normal"]))
+        
+        # Adiciona Recomendação (NOVO)
+        rec = RECOMENDACOES.get(r['porta'], "Nenhuma recomendação específica.")
+        elementos.append(Paragraph(f"<i>Dica: {rec}</i>", estilos["Normal"]))
+
         if r.get("diretorios_sensiveis"):
-            elementos.append(Paragraph(f"Diretórios sensíveis: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
+            elementos.append(Paragraph(f"Diretórios: {', '.join(r['diretorios_sensiveis'])}", estilos["Normal"]))
         if r.get("headers_seguranca_ausentes"):
             elementos.append(Paragraph(f"Headers ausentes: {', '.join(r['headers_seguranca_ausentes'])}", estilos["Normal"]))
-        if r.get("metodos_http_perigosos"):
-            elementos.append(Paragraph(f"Métodos HTTP perigosos: {', '.join(r['metodos_http_perigosos'])}", estilos["Normal"]))
+            elementos.append(Paragraph(f"<i>Dica: {RECOMENDACOES['Headers']}</i>", estilos["Normal"]))
         elementos.append(Spacer(1,8))
 
+    # SQL Injection (Original)
     if sqli:
         elementos.append(Spacer(1,12))
         elementos.append(Paragraph("<b>SQL Injection detectada:</b>", estilos["Heading2"]))
+        elementos.append(Paragraph(f"<i>Dica: {RECOMENDACOES['SQLi']}</i>", estilos["Normal"]))
         for vuln in sqli:
             elementos.append(Paragraph(vuln, estilos["Normal"]))
 
     doc.build(elementos)
-    print(f"\n📄 PDF salvo em: {arquivo_pdf}")
+    print(f"\n📄 PDF PRO salvo em: {arquivo_pdf}")
 
 # -------------------- MAIN --------------------
 if __name__ == "__main__":
-    alvo = input("IP ou URL alvo: ").strip()
-    if not ping_host(alvo.split('/')[0]):
+    alvo_input = input("IP ou URL alvo: ").strip()
+    alvo_limpo = alvo_input.replace("http://", "").replace("https://", "").split('/')[0]
+
+    if not ping_host(alvo_limpo):
         print("Host inativo ou inacessível. Verifique a rede.")
         exit()
 
-    resultados = scan_host(alvo.split('/')[0])
-    sqli_vulns = scan_sqli(alvo)
-    if not resultados and not sqli_vulns:
-        print("Nenhuma vulnerabilidade encontrada.")
+    # Executa buscas
+    subdominios = scan_subdominios(alvo_limpo) if "." in alvo_limpo else []
+    resultados = scan_host(alvo_limpo)
+    sqli_vulns = scan_sqli(alvo_input) if "http" in alvo_input else []
+
+    if not resultados and not sqli_vulns and not subdominios:
+        print("Nenhuma informação encontrada.")
         exit()
 
-    risco, score = resumo_executivo(alvo.split('/')[0], resultados)
-    gerar_pdf(alvo, resultados, risco, score, sqli_vulns)
+    risco, score = resumo_executivo(alvo_limpo, resultados)
+    
+    # Gera o PDF com tudo
+    gerar_pdf(alvo_limpo, resultados, risco, score, sqli_vulns, subdominios)
 
-    with open(f"{DOWNLOAD_DIR}/relatorio_{alvo}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}.json","w") as f:
+    # JSON original atualizado
+    with open(f"{DOWNLOAD_DIR}/relatorio_{alvo_limpo}.json","w") as f:
         json.dump({
-            "ip": alvo,
+            "ip": alvo_limpo,
             "data": str(datetime.now()),
             "risco": risco,
             "score": score,
+            "subdominios": subdominios,
             "resultados": resultados,
             "sql_injection": sqli_vulns
         }, f, indent=4)
 
-    print("\n✅ Relatórios gerados com sucesso no celular.")
+    print("\n✅ Auditoria completa gerada com sucesso.")
