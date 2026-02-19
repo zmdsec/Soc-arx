@@ -77,6 +77,7 @@ RECOMENDACOES = {
     "Headers": "Faltam headers de segurança → CSP, HSTS, etc",
 }
 
+# Caminho corrigido (sem escape inválido)
 DOWNLOAD_DIR = os.path.expanduser("\~/storage/shared/Download/Soc-Arx")
 
 # ────────────────────────────────────────────────
@@ -89,7 +90,7 @@ def cprint(text: str, color: str = None):
 def garantir_diretorio():
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     if not os.access(DOWNLOAD_DIR, os.W_OK):
-        cprint(f"[ERRO] Sem permissão em {DOWNLOAD_DIR}", "red")
+        cprint(f"[ERRO] Sem permissão de escrita em {DOWNLOAD_DIR}", "red")
         cprint("Execute: termux-setup-storage e reabra o Termux", "yellow")
         exit(1)
 
@@ -135,7 +136,7 @@ def detectar_tecnologias(url: str) -> List[str]:
 
 def scan_subdominios(dominio: str) -> List[Dict]:
     if is_private_ip(dominio):
-        cprint("[INFO] IP privado → pulando subdomínios", "yellow")
+        cprint("[INFO] IP privado detectado → pulando subdomínios", "yellow")
         return []
 
     encontrados = []
@@ -143,7 +144,7 @@ def scan_subdominios(dominio: str) -> List[Dict]:
     try:
         fake = f"fake-test-{uuid.uuid4().hex[:8]}.{dominio}"
         wildcard_ip = socket.gethostbyname(fake)
-        cprint(f"[!] Wildcard DNS: {wildcard_ip}", "yellow")
+        cprint(f"[!] Wildcard DNS detectado → {wildcard_ip}", "yellow")
     except:
         pass
 
@@ -211,7 +212,7 @@ def verificar_cors_simples(url: str) -> str:
         if "Access-Control-Allow-Origin" in r.headers:
             acao = r.headers["Access-Control-Allow-Origin"]
             if acao == "*" or "evil-test.com" in acao:
-                return "Vulnerável (CORS wildcard)"
+                return "Vulnerável (CORS wildcard ou reflete origin malicioso)"
     except:
         pass
     return "OK"
@@ -421,19 +422,41 @@ if __name__ == "__main__":
             txt_path = os.path.join(DOWNLOAD_DIR, f"SOC-ARX_{dominio.replace('.', '_')}_{ts}.txt")
             with open(txt_path, "w", encoding="utf-8") as f:
                 f.write(f"SOC-ARX AUDIT – {dominio}\n\n")
-                f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+                f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n")
                 f.write(f"Portas abertas: {len(portas)}\n")
-                for p in portas:
-                    f.write(f"  {p['porta']} - {p['servico']} | {clean_for_pdf(p['banner'], 100)}\n")
+                if portas:
+                    f.write("Portas:\n")
+                    for p in portas:
+                        banner_clean = clean_for_pdf(p.get('banner', 'N/A'), 100)
+                        f.write(f"  {p['porta']} - {p['servico']} | Banner: {banner_clean}\n")
+                f.write(f"\nPossíveis SQLi: {len(sql_inj)}\n")
                 if sql_inj:
-                    f.write("\nSQLi detectados:\n" + "\n".join(f"  • {v}" for v in sql_inj) + "\n")
+                    f.write("SQLi:\n")
+                    for v in sql_inj:
+                        f.write(f"  • {v}\n")
+                f.write("\nInstale reportlab para PDF: pip install reportlab\n")
             cprint(f"[TXT fallback] Salvo em: {txt_path}", "yellow")
+            cprint(f"Caminho completo: {txt_path}", "cyan")
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         txt_path = os.path.join(DOWNLOAD_DIR, f"SOC-ARX_{dominio.replace('.', '_')}_{ts}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(f"SOC-ARX AUDIT – {dominio}\n\n")
-            f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+            f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n\n")
             f.write(f"Portas abertas: {len(portas)}\n")
-            for p in portas:
-                f.write(f"  {p
+            if portas:
+                f.write("Portas:\n")
+                for p in portas:
+                    banner_clean = clean_for_pdf(p.get('banner', 'N/A'), 100)
+                    f.write(f"  {p['porta']} - {p['servico']} | Banner: {banner_clean}\n")
+            f.write(f"\nPossíveis SQLi: {len(sql_inj)}\n")
+            if sql_inj:
+                f.write("SQLi:\n")
+                for v in sql_inj:
+                    f.write(f"  • {v}\n")
+            f.write("\nInstale reportlab para PDF: pip install reportlab\n")
+        cprint(f"[TXT] Relatório salvo em: {txt_path}", "yellow")
+        cprint(f"Caminho completo: {txt_path}", "cyan")
+
+    cprint(f"\nConcluído em {tempo} segundos.", "cyan")
+    print("Uso apenas em alvos autorizados!")
