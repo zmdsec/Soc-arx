@@ -90,21 +90,19 @@ def garantir_diretorio():
     os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     if not os.access(DOWNLOAD_DIR, os.W_OK):
         cprint(f"[ERRO] Sem permissão em {DOWNLOAD_DIR}", "red")
-        cprint("Execute: termux-setup-storage", "yellow")
+        cprint("Execute: termux-setup-storage e reabra o Termux", "yellow")
         exit(1)
 
 def is_private_ip(ip: str) -> bool:
-    """Retorna True se for IP privado (não tenta subdomínios)"""
     parts = ip.split('.')
     if len(parts) != 4: return False
-    a, b, c, d = map(int, parts)
+    a, b, _, _ = map(int, parts)
     return (a == 10) or (a == 172 and 16 <= b <= 31) or (a == 192 and b == 168) or (a == 127)
 
 def clean_for_pdf(text: str, max_len: int = 150) -> str:
-    """Escapa caracteres que quebram o Paragraph do ReportLab"""
-    text = re.sub(r'<[^>]+>', '', text)               # remove tags HTML
+    text = re.sub(r'<[^>]+>', '', text)
     text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-    text = ' '.join(text.split())                     # remove quebras de linha excessivas
+    text = ' '.join(text.split())
     return text[:max_len] + ("..." if len(text) > max_len else "")
 
 def verificar_ssl(dominio: str) -> Dict[str, Any]:
@@ -137,7 +135,7 @@ def detectar_tecnologias(url: str) -> List[str]:
 
 def scan_subdominios(dominio: str) -> List[Dict]:
     if is_private_ip(dominio):
-        cprint("[INFO] IP privado detectado → pulando enumeração de subdomínios", "yellow")
+        cprint("[INFO] IP privado → pulando subdomínios", "yellow")
         return []
 
     encontrados = []
@@ -145,7 +143,7 @@ def scan_subdominios(dominio: str) -> List[Dict]:
     try:
         fake = f"fake-test-{uuid.uuid4().hex[:8]}.{dominio}"
         wildcard_ip = socket.gethostbyname(fake)
-        cprint(f"[!] Wildcard DNS detectado → {wildcard_ip}", "yellow")
+        cprint(f"[!] Wildcard DNS: {wildcard_ip}", "yellow")
     except:
         pass
 
@@ -213,7 +211,7 @@ def verificar_cors_simples(url: str) -> str:
         if "Access-Control-Allow-Origin" in r.headers:
             acao = r.headers["Access-Control-Allow-Origin"]
             if acao == "*" or "evil-test.com" in acao:
-                return "Vulnerável (CORS wildcard ou reflete origin malicioso)"
+                return "Vulnerável (CORS wildcard)"
     except:
         pass
     return "OK"
@@ -271,7 +269,7 @@ def scan_sqli(url_completa: str) -> List[str]:
     return list(set(vulneraveis))
 
 # ────────────────────────────────────────────────
-# GERAÇÃO DE RELATÓRIO PDF (com escape no banner)
+# GERAÇÃO DE RELATÓRIO PDF
 # ────────────────────────────────────────────────
 
 def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data: Dict, techs: List):
@@ -279,101 +277,107 @@ def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     nome_arquivo = os.path.join(DOWNLOAD_DIR, f"SOC-ARX-AUDIT_{host.replace('.', '_')}_{ts}.pdf")
 
-    doc = SimpleDocTemplate(nome_arquivo, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
-    styles = getSampleStyleSheet()
+    if not REPORTLAB_OK:
+        cprint("[PDF desativado] ReportLab não instalado.", "yellow")
+        return False
 
-    title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=22, textColor=colors.darkblue, alignment=TA_CENTER, spaceAfter=20)
-    heading_style = ParagraphStyle('Heading2', parent=styles['Heading2'], fontSize=14, textColor=colors.navy, spaceAfter=12)
-    normal_style = styles['Normal']
-    alert_style = ParagraphStyle('Alert', parent=normal_style, textColor=colors.red, fontSize=11)
-    recom_style = ParagraphStyle('Recom', parent=normal_style, textColor=colors.darkgreen, fontSize=10, italic=True)
+    try:
+        doc = SimpleDocTemplate(nome_arquivo, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=60, bottomMargin=40)
+        styles = getSampleStyleSheet()
 
-    elements = []
+        title_style = ParagraphStyle('Title', parent=styles['Heading1'], fontSize=22, textColor=colors.darkblue, alignment=TA_CENTER, spaceAfter=20)
+        heading_style = ParagraphStyle('Heading2', parent=styles['Heading2'], fontSize=14, textColor=colors.navy, spaceAfter=12)
+        normal_style = styles['Normal']
+        alert_style = ParagraphStyle('Alert', parent=normal_style, textColor=colors.red, fontSize=11)
+        recom_style = ParagraphStyle('Recom', parent=normal_style, textColor=colors.darkgreen, fontSize=10, italic=True)
 
-    # Capa
-    elements.append(Paragraph("🛡️ SOC-ARX Auditor v3.2", title_style))
-    elements.append(Paragraph("Relatório de Segurança – Uso Doméstico / Testes", heading_style))
-    elements.append(Spacer(1, 30))
-    elements.append(Paragraph(f"Alvo: {host}", normal_style))
-    elements.append(Paragraph(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", normal_style))
-    elements.append(PageBreak())
+        elements = []
 
-    # Resumo
-    score = 100 - (len(resultados) * 6) - (50 if sqli else 0)
-    score = max(10, score)
-    risco = "CRÍTICO" if score < 45 else "ALTO" if score < 70 else "MÉDIO" if score < 90 else "BAIXO"
-    risco_color = colors.red if risco == "CRÍTICO" else colors.orange if risco in ("ALTO", "MÉDIO") else colors.green
+        # Capa
+        elements.append(Paragraph("🛡️ SOC-ARX Auditor v3.4", title_style))
+        elements.append(Paragraph("Relatório de Segurança – Uso Doméstico", heading_style))
+        elements.append(Spacer(1, 30))
+        elements.append(Paragraph(f"Alvo: {host}", normal_style))
+        elements.append(Paragraph(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}", normal_style))
+        elements.append(PageBreak())
 
-    resumo_data = [
-        ["Métrica", "Valor"],
-        ["Host / IP", host],
-        ["SSL", ssl_data.get('status', 'N/A')],
-        ["Risco Estimado", risco],
-        ["Pontuação", f"{score}/100"]
-    ]
-    t_resumo = Table(resumo_data, colWidths=[180, 240])
-    t_resumo.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,0), colors.darkblue),
-        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
-        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-        ('BACKGROUND', (1,3), (1,3), risco_color),
-        ('TEXTCOLOR', (1,3), (1,3), colors.white),
-        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-    ]))
-    elements.append(Paragraph("Resumo Executivo", heading_style))
-    elements.append(t_resumo)
-    elements.append(Spacer(1, 20))
+        # Resumo
+        score = 100 - (len(resultados) * 6) - (50 if sqli else 0)
+        score = max(10, score)
+        risco = "CRÍTICO" if score < 45 else "ALTO" if score < 70 else "MÉDIO" if score < 90 else "BAIXO"
+        risco_color = colors.red if risco == "CRÍTICO" else colors.orange if risco in ("ALTO", "MÉDIO") else colors.green
 
-    if techs:
-        elements.append(Paragraph("Tecnologias Detectadas", heading_style))
-        for t in techs:
-            elements.append(Paragraph(f"• {t}", normal_style))
-        elements.append(Spacer(1, 15))
-
-    if subs:
-        elements.append(Paragraph("Subdomínios Encontrados", heading_style))
-        sub_data = [["Subdomínio", "IP"]] + [[s['host'], s['ip']] for s in subs]
-        t_subs = Table(sub_data, colWidths=[240, 180])
-        t_subs.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (-1,0), colors.lightblue)]))
-        elements.append(t_subs)
+        resumo_data = [
+            ["Métrica", "Valor"],
+            ["Host / IP", host],
+            ["SSL", ssl_data.get('status', 'N/A')],
+            ["Risco Estimado", risco],
+            ["Pontuação", f"{score}/100"]
+        ]
+        t_resumo = Table(resumo_data, colWidths=[180, 240])
+        t_resumo.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.darkblue),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+            ('BACKGROUND', (1,3), (1,3), risco_color),
+            ('TEXTCOLOR', (1,3), (1,3), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ]))
+        elements.append(Paragraph("Resumo Executivo", heading_style))
+        elements.append(t_resumo)
         elements.append(Spacer(1, 20))
 
-    # Portas
-    elements.append(PageBreak())
-    elements.append(Paragraph("Portas Abertas & Vulnerabilidades", heading_style))
-    for r in resultados:
-        elements.append(Paragraph(f"Porta {r['porta']} – {r['servico']}", heading_style))
-        
-        # Banner seguro para PDF
-        safe_banner = clean_for_pdf(r['banner'])
-        elements.append(Paragraph(f"Banner: {safe_banner}", normal_style))
-        
-        rec = RECOMENDACOES.get(r['porta'], "Nenhuma recomendação crítica")
-        elements.append(Paragraph(f"Recomendação: {rec}", recom_style))
-        
-        if r.get('diretorios'):
-            elements.append(Paragraph("Diretórios Sensíveis:", alert_style))
-            for d in r['diretorios']:
-                elements.append(Paragraph(f"  • {d}", normal_style))
-        
-        if r.get('headers_ausentes'):
-            elements.append(Paragraph(f"Headers Ausentes: {', '.join(r['headers_ausentes'])}", alert_style))
-        
-        if r.get('cors', '').startswith('Vulnerável'):
-            elements.append(Paragraph(f"CORS: {r['cors']}", alert_style))
-        
-        elements.append(Spacer(1, 12))
+        if techs:
+            elements.append(Paragraph("Tecnologias Detectadas", heading_style))
+            for t in techs:
+                elements.append(Paragraph(f"• {t}", normal_style))
+            elements.append(Spacer(1, 15))
 
-    if sqli:
+        if subs:
+            elements.append(Paragraph("Subdomínios Encontrados", heading_style))
+            sub_data = [["Subdomínio", "IP"]] + [[s['host'], s['ip']] for s in subs]
+            t_subs = Table(sub_data, colWidths=[240, 180])
+            t_subs.setStyle(TableStyle([('GRID', (0,0), (-1,-1), 0.5, colors.grey), ('BACKGROUND', (0,0), (-1,0), colors.lightblue)]))
+            elements.append(t_subs)
+            elements.append(Spacer(1, 20))
+
         elements.append(PageBreak())
-        elements.append(Paragraph("⚠️ Possíveis Injeções SQL", heading_style))
-        for v in sqli:
-            elements.append(Paragraph(f"• {v}", alert_style))
+        elements.append(Paragraph("Portas Abertas & Vulnerabilidades", heading_style))
+        for r in resultados:
+            elements.append(Paragraph(f"Porta {r['porta']} – {r['servico']}", heading_style))
+            safe_banner = clean_for_pdf(r['banner'])
+            elements.append(Paragraph(f"Banner: {safe_banner}", normal_style))
+            
+            rec = RECOMENDACOES.get(r['porta'], "Nenhuma recomendação crítica")
+            elements.append(Paragraph(f"Recomendação: {rec}", recom_style))
+            
+            if r.get('diretorios'):
+                elements.append(Paragraph("Diretórios Sensíveis:", alert_style))
+                for d in r['diretorios']:
+                    elements.append(Paragraph(f"  • {d}", normal_style))
+            
+            if r.get('headers_ausentes'):
+                elements.append(Paragraph(f"Headers Ausentes: {', '.join(r['headers_ausentes'])}", alert_style))
+            
+            if r.get('cors', '').startswith('Vulnerável'):
+                elements.append(Paragraph(f"CORS: {r['cors']}", alert_style))
+            
+            elements.append(Spacer(1, 12))
 
-    doc.build(elements)
-    cprint(f"\n[SUCESSO] PDF gerado: {nome_arquivo}", "green")
-    cprint("→ Abra com qualquer leitor de PDF no Android", "yellow")
+        if sqli:
+            elements.append(PageBreak())
+            elements.append(Paragraph("⚠️ Possíveis Injeções SQL", heading_style))
+            for v in sqli:
+                elements.append(Paragraph(f"• {v}", alert_style))
+
+        doc.build(elements)
+        cprint(f"\n[SUCESSO] PDF salvo em: {nome_arquivo}", "green")
+        cprint("→ Abra Arquivos > Download > Soc-Arx", "yellow")
+        return True
+    except Exception as e:
+        cprint(f"[ERRO PDF]: {str(e)}", "red")
+        return False
 
 # ────────────────────────────────────────────────
 # MAIN
@@ -381,12 +385,11 @@ def gerar_pdf_pro(host: str, resultados: List, sqli: List, subs: List, ssl_data:
 
 if __name__ == "__main__":
     print("\n" + "═"*70)
-    cprint("     SOC-ARX Auditor v3.3 – Versão Estável     ", "cyan")
+    cprint("     SOC-ARX Auditor v3.4 – Completo e Estável     ", "cyan")
     print("═"*70 + "\n")
 
     alvo = input("Alvo (IP / domínio / URL completa): ").strip()
 
-    # Normaliza entrada
     if alvo.startswith(("http://", "https://")):
         parsed = urlparse(alvo)
         dominio = parsed.netloc or parsed.path.split("/")[0]
@@ -413,27 +416,24 @@ if __name__ == "__main__":
     tempo = round(time.time() - t_start, 1)
 
     if REPORTLAB_OK:
-        gerar_pdf_pro(dominio, portas, sql_inj, subdominios, ssl_info, techs)
+        if not gerar_pdf_pro(dominio, portas, sql_inj, subdominios, ssl_info, techs):
+            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            txt_path = os.path.join(DOWNLOAD_DIR, f"SOC-ARX_{dominio.replace('.', '_')}_{ts}.txt")
+            with open(txt_path, "w", encoding="utf-8") as f:
+                f.write(f"SOC-ARX AUDIT – {dominio}\n\n")
+                f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
+                f.write(f"Portas abertas: {len(portas)}\n")
+                for p in portas:
+                    f.write(f"  {p['porta']} - {p['servico']} | {clean_for_pdf(p['banner'], 100)}\n")
+                if sql_inj:
+                    f.write("\nSQLi detectados:\n" + "\n".join(f"  • {v}" for v in sql_inj) + "\n")
+            cprint(f"[TXT fallback] Salvo em: {txt_path}", "yellow")
     else:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        score = 100 - (len(portas) * 6) - (50 if sql_inj else 0)
-        score = max(10, score)
-        risco = "CRÍTICO" if score < 45 else "ALTO" if score < 70 else "MÉDIO" if score < 90 else "BAIXO"
-
         txt_path = os.path.join(DOWNLOAD_DIR, f"SOC-ARX_{dominio.replace('.', '_')}_{ts}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(f"SOC-ARX AUDIT – {dominio}\n\n")
-            f.write(f"Risco: {risco} | Score estimado: {score}/100\n\n")
+            f.write(f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}\n")
             f.write(f"Portas abertas: {len(portas)}\n")
-            if portas:
-                f.write("Portas:\n")
-                for p in portas:
-                    f.write(f"  {p['porta']} - {p['servico']} | {clean_for_pdf(p['banner'], 100)}\n")
-            f.write(f"Possíveis SQLi: {len(sql_inj)}\n")
-            if sql_inj:
-                f.write("SQLi:\n" + "\n".join(f"  • {v}" for v in sql_inj) + "\n")
-            f.write("\nUse pip install reportlab para PDF completo.\n")
-        cprint(f"[TXT] Relatório salvo em: {txt_path}", "yellow")
-
-    cprint(f"\nConcluído em {tempo} segundos.", "cyan")
-    print("Uso apenas em alvos autorizados!")
+            for p in portas:
+                f.write(f"  {p
