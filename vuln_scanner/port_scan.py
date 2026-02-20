@@ -3,7 +3,7 @@ from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict
 
-# --- SUPORTE A PDF ---
+# --- SUPORTE A PDF (Recuperado) ---
 try:
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
     from reportlab.lib.pagesizes import A4
@@ -19,7 +19,7 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 # --- CORES E ESTILO ---
 G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\033[0m'
 
-# Caminho de download
+# Caminho de download com plano B
 DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
 try:
     if not os.path.exists(DOWNLOAD_PATH): 
@@ -27,11 +27,12 @@ try:
 except:
     DOWNLOAD_PATH = os.getcwd()
 
-# Lista expandida com o aprendizado do site "Mega Difícil"
+# Lista Mestra de Arquivos (PHP + ASP.NET + Configs)
 SENSITIVE_FILES = [
     "/robots.txt", "/.env", "/admin/", "/config.php", "/web.config", 
-    "/login.aspx", "/trace.axd", "/elmah.axd", "/web.config.bak",
-    "/bin/", "/App_Data/", "/Global.asax", "/.git/"
+    "/login.aspx", "/trace.axd", "/elmah.axd", "/.git/", "/phpinfo.php",
+    "/index.php.bak", "/credentials.txt", "/db_backup.sql", "/bin/", 
+    "/App_Data/", "/Global.asax"
 ]
 
 LABS = {
@@ -46,10 +47,35 @@ USER_AGENTS = [
     "Mozilla/5.0 (compatible; Googlebot/2.1)"
 ]
 
-# -------------------- MOTOR TÉCNICO V9.0 --------------------
+# -------------------- MOTOR TÉCNICO --------------------
+
+def auto_installer():
+    tools = ["nmap", "whatweb"]
+    for tool in tools:
+        if subprocess.getstatusoutput(f"command -v {tool}")[0] != 0:
+            print(f"{Y}[!] Instalando {tool}...{E}")
+            os.system(f"pkg install {tool} -y")
+
+def check_vpn():
+    try:
+        ip = requests.get("https://api64.ipify.org", timeout=5).text
+        status = f"{G}PROTEGIDA (IPv6/VPN){E}" if ":" in ip else f"{Y}IPv4 (CUIDADO - IP EXPOSTO){E}"
+        return ip, status
+    except:
+        return "Detectado", f"{Y}ERRO DE CONEXÃO{E}"
+
+def get_telnet_banner(target):
+    try:
+        s = socket.socket()
+        s.settimeout(2)
+        s.connect((target, 23))
+        banner = s.recv(1024).decode(errors='ignore').strip()
+        s.close()
+        return banner if banner else "Porta 23 aberta (Sem banner)"
+    except: return None
 
 def get_asp_tokens(html):
-    """Extrai tokens ocultos do ASP.NET que você viu no HTML bruto"""
+    """Extrai os tokens do site difícil (ViewState/EventValidation)"""
     tokens = {}
     try:
         for field in ["__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"]:
@@ -59,26 +85,29 @@ def get_asp_tokens(html):
     return tokens
 
 def analyze_web_intelligence(url):
-    results = {"cookies": [], "files": [], "tech": "Oculta", "asp_tokens": {}, "vulnerabilities": []}
+    results = {"cookies": [], "files": [], "tech": "Oculta", "asp_tokens": {}, "vulnerabilities": [], "telnet": None}
     headers = {'User-Agent': random.choice(USER_AGENTS)}
     
     try:
+        domain = urlparse(url).netloc
+        ip = socket.gethostbyname(domain)
+        results['telnet'] = get_telnet_banner(ip)
+        
         session = requests.Session()
         r = session.get(url, timeout=5, verify=False, headers=headers)
         
-        # Detecta versão do ASP.NET nos Headers
+        # O que aprendemos no TestASP: Captura de Versão e Tokens
         if "X-AspNet-Version" in r.headers:
-            results['tech'] = f"ASP.NET Versão: {r.headers['X-AspNet-Version']}"
+            results['tech'] = f"ASP.NET {r.headers['X-AspNet-Version']}"
         elif "Server" in r.headers:
             results['tech'] = r.headers['Server']
-        
-        # Pega os tokens que você analisou hoje
+
         results['asp_tokens'] = get_asp_tokens(r.text)
         
-        # Procura por vazamento de 'admin' no código
         if "admin" in r.text.lower():
-            results['vulnerabilities'].append("Palavra 'admin' encontrada no HTML (Possível User Enumeration)")
+            results['vulnerabilities'].append("Palavra 'admin' no código (Vazamento de Informação)")
 
+        # Scan de arquivos sensíveis
         for path in SENSITIVE_FILES:
             test_url = urljoin(url, path)
             try:
@@ -86,38 +115,75 @@ def analyze_web_intelligence(url):
                 if res.status_code == 200:
                     results['files'].append(f"{path} (ACHADO CRÍTICO)")
                 elif res.status_code == 500:
-                    results['vulnerabilities'].append(f"Erro 500 em {path} (Pode ser .NET mal configurado)")
+                    results['vulnerabilities'].append(f"Erro 500 em {path} (Possível falha de configuração .NET)")
             except: continue
-    except Exception as e:
-        results['tech'] = f"Erro de conexão: {str(e)}"
+
+        # Busca cookies inseguros
+        if session.cookies:
+            for cookie in session.cookies:
+                if not cookie.secure: results['cookies'].append(f"{cookie.name} (Sem Secure Flag)")
+
+    except Exception as e: results['tech'] = f"Erro: {str(e)}"
     return results
 
 def xpl_suggester(intel):
-    """Sugestão baseada na sua vitória contra o servidor difícil"""
-    print(f"\n{B}{C}🛠️ ESTRATÉGIA RECOMENDADA:{E}")
+    """Módulo de Dicas baseado no sucesso de hoje"""
+    print(f"\n{B}{C}🛠️ ESTRATÉGIA DE ATAQUE SUGERIDA:{E}")
     if intel['asp_tokens'] or "ASP.NET" in intel['tech']:
-        print(f"{R}[!] SERVIDOR MICROSOFT DETECTADO!{E}")
-        print(f"{Y} ❯ Use o bypass: admin'--{E}")
-        print(f"{Y} ❯ Cuidado com o filtro: O servidor bloqueia <script> e <img>{E}")
+        print(f"{R}[!] ALVO WINDOWS/IIS DETECTADO{E}")
+        print(f"{Y} ❯ Use Bypass SQL: admin'--{E}")
+        print(f"{Y} ❯ Payload de Tempo: admin' WAITFOR DELAY '0:0:5'--{E}")
+        print(f"{Y} ❯ Bloqueio XSS detectado! Tente ofuscação com tags <img> ou <svg>.{E}")
     else:
-        print(f"{G} ❯ Servidor padrão. Testar payloads clássicos de SQLi.{E}")
+        print(f"{G} ❯ Alvo padrão. Tente ' OR 1=1# ou injeções baseadas em Union.{E}")
 
 def run_nmap_scan(target):
-    print(f"\n{B}{Y}[NMAP] Iniciando auditoria de infraestrutura...{E}")
+    print(f"\n{B}{Y}[NMAP] Auditando Infraestrutura...{E}")
     try:
-        # Scan rápido para não ser bloqueado
-        return subprocess.check_output(["nmap", "-sV", "-F", "-Pn", target]).decode()
-    except:
-        return "Nmap não disponível no Termux. Instale com: pkg install nmap"
+        cmd = ["nmap", "-sV", "-T4", "-F", "-Pn", target]
+        return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
+    except: return "Nmap falhou ou não instalado."
+
+# -------------------- RELATÓRIO PDF (Completo) --------------------
+
+def export_pdf(target, nmap_data, web_intel):
+    if not PDF_OK: return None
+    filename = f"SOC_V9_{target.replace('.', '_')}.pdf"
+    path = os.path.join(DOWNLOAD_PATH, filename)
+    try:
+        doc = SimpleDocTemplate(path, pagesize=A4)
+        styles = getSampleStyleSheet()
+        elements = []
+        elements.append(Paragraph(f"🛡️ SOC-ARX V9.0 - AUDIT REPORT", styles['Heading1']))
+        elements.append(Paragraph(f"<b>ALVO:</b> {target} | <b>DATA:</b> {datetime.now()}", styles['Normal']))
+        elements.append(Spacer(1, 12))
+        
+        elements.append(Paragraph("1. Inteligência de Aplicação", styles['Heading2']))
+        elements.append(Paragraph(f"<b>Tecnologia:</b> {web_intel['tech']}", styles['Normal']))
+        for v in web_intel['vulnerabilities']: elements.append(Paragraph(f"• [!] {v}", styles['Normal']))
+        for f in web_intel['files']: elements.append(Paragraph(f"• [+] {f}", styles['Normal']))
+        
+        elements.append(Paragraph("2. Auditoria de Rede", styles['Heading2']))
+        nmap_style = ParagraphStyle('Mono', fontName='Courier', fontSize=7)
+        for line in nmap_data.split('\n'):
+            elements.append(Paragraph(line.replace(' ', '&nbsp;'), nmap_style))
+            
+        doc.build(elements)
+        return path
+    except: return None
+
+# -------------------- MAIN --------------------
 
 def main():
     os.system('clear')
-    print(f"{C}{B}🛡️ SOC-ARX V9.0 - PERSISTENCE EDITION{E}")
-    print(f"{Y}Baseado no sucesso contra infraestrutura legada Microsoft{E}\n")
+    print(f"{C}{B}🛡️ SOC-ARX V9.0 - PERSISTENCE & REPORT EDITION{E}")
+    auto_installer()
+    
+    my_ip, vpn_status = check_vpn()
+    print(f"{B}Sua Conexão: {my_ip} | Status: {vpn_status}{E}\n")
 
     print(f"{B}SELECIONE O LABORATÓRIO:{E}")
-    for k, v in LABS.items():
-        print(f"{G}{k}. {v[0]} ({v[1]}){E}")
+    for k, v in LABS.items(): print(f"{G}{k}. {v[0]}{E}")
     
     choice = input(f"\n{B}❯ SELEÇÃO: {E}").strip()
     target = LABS[choice][1] if choice in LABS else input(f"{B}❯ TARGET: {E}").strip()
@@ -127,25 +193,20 @@ def main():
     intel = analyze_web_intelligence(f"http://{target}")
     nmap_res = run_nmap_scan(target)
     
-    print(f"\n{B}--- RESULTADOS DO SCAN ---{E}")
-    print(f"{C}TECNOLOGIA: {intel['tech']}{E}")
+    # Interface de Saída
+    print(f"\n{B}{'='*50}\nRELATÓRIO DE VARREDURA SOC-ARX\n{'='*50}{E}")
+    print(f"{C}Tecnologia Detectada: {intel['tech']}{E}")
+    if intel['telnet']: print(f"{Y}Banner Telnet: {intel['telnet']}{E}")
     
-    if intel['vulnerabilities']:
-        print(f"\n{R}[!] VULNERABILIDADES POTENCIAIS:{E}")
-        for v in intel['vulnerabilities']: print(f"  ❯ {v}")
-
-    if intel['files']:
-        print(f"\n{G}[+] ARQUIVOS ENCONTRADOS:{E}")
-        for f in intel['files']: print(f"  ❯ {f}")
-
     xpl_suggester(intel)
-
-    # Limpeza de rastros
-    os.system("history -c")
-    print(f"\n{G}[✔] Scan completo e histórico limpo.{E}")
+    
+    # Exportação
+    pdf_path = export_pdf(target, nmap_res, intel)
+    if pdf_path: print(f"\n{G}[✔] RELATÓRIO PDF GERADO: {pdf_path}{E}")
+    
+    os.system("history -c") # Limpeza Furtiva
+    print(f"\n{G}[*] Processo finalizado com sucesso.{E}")
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print("\nInterrompido.")
+    try: main()
+    except KeyboardInterrupt: print("\nEncerrado pelo usuário.")
