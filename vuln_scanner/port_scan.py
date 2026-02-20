@@ -1,212 +1,205 @@
-import socket, os, requests, ssl, subprocess, urllib3, time, sys, random, re
+import socket, os, requests, ssl, subprocess, urllib3, time, sys, random, re, threading
 from datetime import datetime
 from urllib.parse import urljoin, urlparse
 from typing import List, Dict
 
-# --- SUPORTE A PDF (Recuperado) ---
+# --- SUPORTE A RELATÓRIOS PROFISSIONAIS ---
 try:
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak, Image
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib import colors
-    from reportlab.lib.enums import TA_CENTER
+    from reportlab.lib.enums import TA_CENTER, TA_LEFT
     PDF_OK = True
 except ImportError:
     PDF_OK = False
 
+# Desabilita avisos de segurança para ambientes de teste
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- CORES E ESTILO ---
+# --- SISTEMA DE CORES SOC-ARX ---
 G, Y, R, C, B, E = '\033[92m', '\033[93m', '\033[91m', '\033[96m', '\033[1m', '\033[0m'
 
-# Caminho de download com plano B
-DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx"
-try:
-    if not os.path.exists(DOWNLOAD_PATH): 
-        os.makedirs(DOWNLOAD_PATH, exist_ok=True)
-except:
-    DOWNLOAD_PATH = os.getcwd()
+# --- CONFIGURAÇÃO DE DIRETÓRIOS ---
+DOWNLOAD_PATH = "/sdcard/Download/Soc-Arx_Supreme"
+if not os.path.exists(DOWNLOAD_PATH):
+    try: os.makedirs(DOWNLOAD_PATH, exist_ok=True)
+    except: DOWNLOAD_PATH = os.getcwd()
 
-# Lista Mestra de Arquivos (PHP + ASP.NET + Configs)
-SENSITIVE_FILES = [
+# --- WORDLIST SUPREMA DE RECONHECIMENTO ---
+# Lista exaustiva para não deixar passar nada (Web e Servidor)
+ULTIMATE_WORDLIST = [
     "/robots.txt", "/.env", "/admin/", "/config.php", "/web.config", 
-    "/login.aspx", "/trace.axd", "/elmah.axd", "/.git/", "/phpinfo.php",
+    "/login.aspx", "/trace.axd", "/elmah.axd", "/.git/config", "/phpinfo.php",
     "/index.php.bak", "/credentials.txt", "/db_backup.sql", "/bin/", 
-    "/App_Data/", "/Global.asax"
+    "/App_Data/", "/Global.asax", "/server-status", "/phpmyadmin/", 
+    "/.ssh/id_rsa", "/.aws/credentials", "/wp-config.php", "/.htaccess",
+    "/composer.json", "/package.json", "/Dockerfile", "/docker-compose.yml",
+    "/api/v1/users", "/api/v2/config", "/backup.zip", "/setup.log",
+    "/php.ini", "/mysql.log", "/access.log", "/error.log", "/.vscode/settings.json"
 ]
 
-LABS = {
-    "1": ("OWASP Juice Shop", "demo.owasp-juiceshop.org"),
-    "2": ("Altoro Mutual (Banco)", "demo.testfire.net"),
-    "3": ("Test PHP (VulnWeb)", "testphp.vulnweb.com"),
-    "4": ("Test ASP.NET (Windows)", "testaspnet.vulnweb.com")
-}
+# -------------------- CLASSE SUPREMA DE SCANNER --------------------
 
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "Mozilla/5.0 (compatible; Googlebot/2.1)"
-]
+class SOC_ARX_SUPREME:
+    def __init__(self, target):
+        self.target = target
+        self.url = f"http://{target}" if not target.startswith("http") else target
+        self.domain = urlparse(self.url).netloc
+        self.start_time = datetime.now()
+        self.intel = {
+            "server": "Desconhecido",
+            "headers": {},
+            "ports": [],
+            "files": [],
+            "asp_tokens": {},
+            "dns": {},
+            "whois": "Simulado",
+            "cookies": []
+        }
 
-# -------------------- MOTOR TÉCNICO --------------------
+    def log(self, msg, type="INFO"):
+        prefix = f"{B}{C}[*]{E}" if type == "INFO" else f"{B}{G}[+]{E}"
+        if type == "WARN": prefix = f"{B}{Y}[!]{E}"
+        if type == "CRIT": prefix = f"{B}{R}[!!!]{E}"
+        print(f"{prefix} {msg}")
 
-def auto_installer():
-    tools = ["nmap", "whatweb"]
-    for tool in tools:
-        if subprocess.getstatusoutput(f"command -v {tool}")[0] != 0:
-            print(f"{Y}[!] Instalando {tool}...{E}")
-            os.system(f"pkg install {tool} -y")
+    def setup_env(self):
+        """Prepara o Termux com tudo que existe de melhor"""
+        self.log("Verificando arsenal de ferramentas no Termux...")
+        tools = ["nmap", "whatweb", "whois", "dnsutils"]
+        for t in tools:
+            if subprocess.getstatusoutput(f"command -v {t}")[0] != 0:
+                self.log(f"Instalando {t}...", "WARN")
+                os.system(f"pkg install {t} -y")
 
-def check_vpn():
-    try:
-        ip = requests.get("https://api64.ipify.org", timeout=5).text
-        status = f"{G}PROTEGIDA (IPv6/VPN){E}" if ":" in ip else f"{Y}IPv4 (CUIDADO - IP EXPOSTO){E}"
-        return ip, status
-    except:
-        return "Detectado", f"{Y}ERRO DE CONEXÃO{E}"
+    def dns_recon(self):
+        """Coleta informações de DNS do alvo"""
+        self.log(f"Iniciando Reconhecimento DNS para {self.domain}")
+        try:
+            self.intel['dns']['IP'] = socket.gethostbyname(self.domain)
+            # Simulação de coleta NS/MX (pode ser expandido com 'dig')
+        except: self.intel['dns']['IP'] = "Não resolvido"
 
-def get_telnet_banner(target):
-    try:
-        s = socket.socket()
-        s.settimeout(2)
-        s.connect((target, 23))
-        banner = s.recv(1024).decode(errors='ignore').strip()
-        s.close()
-        return banner if banner else "Porta 23 aberta (Sem banner)"
-    except: return None
-
-def get_asp_tokens(html):
-    """Extrai os tokens do site difícil (ViewState/EventValidation)"""
-    tokens = {}
-    try:
-        for field in ["__VIEWSTATE", "__EVENTVALIDATION", "__VIEWSTATEGENERATOR"]:
-            match = re.search(f'id="{field}" value="(.*?)"', html)
-            if match: tokens[field] = match.group(1)
-    except: pass
-    return tokens
-
-def analyze_web_intelligence(url):
-    results = {"cookies": [], "files": [], "tech": "Oculta", "asp_tokens": {}, "vulnerabilities": [], "telnet": None}
-    headers = {'User-Agent': random.choice(USER_AGENTS)}
-    
-    try:
-        domain = urlparse(url).netloc
-        ip = socket.gethostbyname(domain)
-        results['telnet'] = get_telnet_banner(ip)
-        
+    def web_intelligence(self):
+        """O cérebro do scanner: Analisa a fundo a aplicação web"""
+        self.log("Iniciando Módulo de Inteligência Web...")
         session = requests.Session()
-        r = session.get(url, timeout=5, verify=False, headers=headers)
+        session.headers.update({'User-Agent': 'Mozilla/5.0 (Supreme-Scanner-V12)'})
         
-        # O que aprendemos no TestASP: Captura de Versão e Tokens
-        if "X-AspNet-Version" in r.headers:
-            results['tech'] = f"ASP.NET {r.headers['X-AspNet-Version']}"
-        elif "Server" in r.headers:
-            results['tech'] = r.headers['Server']
+        try:
+            r = session.get(self.url, timeout=10, verify=False)
+            self.intel['headers'] = dict(r.headers)
+            self.intel['server'] = r.headers.get('Server', 'Oculto')
 
-        results['asp_tokens'] = get_asp_tokens(r.text)
-        
-        if "admin" in r.text.lower():
-            results['vulnerabilities'].append("Palavra 'admin' no código (Vazamento de Informação)")
+            # Analisa se é Microsoft (O que você aprendeu no TestASP)
+            if "__VIEWSTATE" in r.text:
+                self.log("Tecnologia ASP.NET Detectada!", "WARN")
+                match = re.search(r'id="__VIEWSTATE" value="(.*?)"', r.text)
+                if match: self.intel['asp_tokens']['VIEWSTATE'] = match.group(1)[:30] + "..."
 
-        # Scan de arquivos sensíveis
-        for path in SENSITIVE_FILES:
-            test_url = urljoin(url, path)
-            try:
-                res = session.get(test_url, timeout=2, verify=False, headers=headers)
-                if res.status_code == 200:
-                    results['files'].append(f"{path} (ACHADO CRÍTICO)")
-                elif res.status_code == 500:
-                    results['vulnerabilities'].append(f"Erro 500 em {path} (Possível falha de configuração .NET)")
-            except: continue
+            # Fuzzing de Diretórios (Busca por arquivos sensíveis)
+            self.log("Iniciando Fuzzing de Diretórios (Wordlist Suprema)...")
+            for path in ULTIMATE_WORDLIST:
+                test_url = urljoin(self.url, path)
+                try:
+                    res = session.get(test_url, timeout=1.5)
+                    if res.status_code == 200:
+                        self.log(f"Achado Crítico: {path}", "SUCCESS")
+                        self.intel['files'].append(f"{path} (200 OK)")
+                    elif res.status_code == 403:
+                        self.intel['files'].append(f"{path} (403 Proibido - Existe!)")
+                except: continue
 
-        # Busca cookies inseguros
-        if session.cookies:
+            # Análise de Cookies
             for cookie in session.cookies:
-                if not cookie.secure: results['cookies'].append(f"{cookie.name} (Sem Secure Flag)")
+                self.intel['cookies'].append(f"{cookie.name} (Secure: {cookie.secure})")
 
-    except Exception as e: results['tech'] = f"Erro: {str(e)}"
-    return results
+        except Exception as e:
+            self.log(f"Erro na análise web: {e}", "CRIT")
 
-def xpl_suggester(intel):
-    """Módulo de Dicas baseado no sucesso de hoje"""
-    print(f"\n{B}{C}🛠️ ESTRATÉGIA DE ATAQUE SUGERIDA:{E}")
-    if intel['asp_tokens'] or "ASP.NET" in intel['tech']:
-        print(f"{R}[!] ALVO WINDOWS/IIS DETECTADO{E}")
-        print(f"{Y} ❯ Use Bypass SQL: admin'--{E}")
-        print(f"{Y} ❯ Payload de Tempo: admin' WAITFOR DELAY '0:0:5'--{E}")
-        print(f"{Y} ❯ Bloqueio XSS detectado! Tente ofuscação com tags <img> ou <svg>.{E}")
-    else:
-        print(f"{G} ❯ Alvo padrão. Tente ' OR 1=1# ou injeções baseadas em Union.{E}")
+    def network_audit(self):
+        """Varredura de rede profissional (Nmap Full)"""
+        self.log("Iniciando Auditoria de Rede Profissional...")
+        try:
+            # -sV: Versões | -O: Sistema Operacional | -T4: Velocidade | -p-: Todas as portas
+            # Para ser rápido no estudo, usaremos -F (portas comuns), mas mude para -p- para scan total.
+            cmd = f"nmap -sV -Pn --open -T4 -F {self.domain}"
+            process = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE, text=True)
+            
+            nmap_output = ""
+            for line in process.stdout:
+                if "open" in line:
+                    self.log(f"Porta Aberta Detectada: {line.strip()}", "SUCCESS")
+                nmap_output += line
+            self.intel['ports'] = nmap_output
+        except:
+            self.intel['ports'] = "Nmap falhou durante a execução."
 
-def run_nmap_scan(target):
-    print(f"\n{B}{Y}[NMAP] Auditando Infraestrutura...{E}")
-    try:
-        cmd = ["nmap", "-sV", "-T4", "-F", "-Pn", target]
-        return subprocess.check_output(cmd, stderr=subprocess.STDOUT).decode()
-    except: return "Nmap falhou ou não instalado."
-
-# -------------------- RELATÓRIO PDF (Completo) --------------------
-
-def export_pdf(target, nmap_data, web_intel):
-    if not PDF_OK: return None
-    filename = f"SOC_V9_{target.replace('.', '_')}.pdf"
-    path = os.path.join(DOWNLOAD_PATH, filename)
-    try:
+    def save_supreme_report(self):
+        """Gera o documento final de estudo (PDF)"""
+        if not PDF_OK: return "Reportlab não instalado."
+        
+        filename = f"SUPREME_SCAN_{self.domain.replace('.', '_')}.pdf"
+        path = os.path.join(DOWNLOAD_PATH, filename)
+        
         doc = SimpleDocTemplate(path, pagesize=A4)
         styles = getSampleStyleSheet()
         elements = []
-        elements.append(Paragraph(f"🛡️ SOC-ARX V9.0 - AUDIT REPORT", styles['Heading1']))
-        elements.append(Paragraph(f"<b>ALVO:</b> {target} | <b>DATA:</b> {datetime.now()}", styles['Normal']))
-        elements.append(Spacer(1, 12))
+
+        # Título
+        elements.append(Paragraph("RELATÓRIO SUPREMO DE INTELIGÊNCIA SOC-ARX V12", styles['Heading1']))
+        elements.append(Paragraph(f"<b>Alvo:</b> {self.domain} ({self.intel['dns'].get('IP')})", styles['Normal']))
+        elements.append(Paragraph(f"<b>Duração:</b> {datetime.now() - self.start_time}", styles['Normal']))
+        elements.append(Spacer(1, 20))
+
+        # Dados Web
+        elements.append(Paragraph("1. Inteligência de Aplicação Web", styles['Heading2']))
+        elements.append(Paragraph(f"<b>Servidor:</b> {self.intel['server']}", styles['Normal']))
+        for f in self.intel['files']: elements.append(Paragraph(f"• {f}", styles['Normal']))
         
-        elements.append(Paragraph("1. Inteligência de Aplicação", styles['Heading2']))
-        elements.append(Paragraph(f"<b>Tecnologia:</b> {web_intel['tech']}", styles['Normal']))
-        for v in web_intel['vulnerabilities']: elements.append(Paragraph(f"• [!] {v}", styles['Normal']))
-        for f in web_intel['files']: elements.append(Paragraph(f"• [+] {f}", styles['Normal']))
-        
-        elements.append(Paragraph("2. Auditoria de Rede", styles['Heading2']))
+        # Dados de Rede
+        elements.append(Spacer(1, 15))
+        elements.append(Paragraph("2. Auditoria de Rede e Serviços", styles['Heading2']))
         nmap_style = ParagraphStyle('Mono', fontName='Courier', fontSize=7)
-        for line in nmap_data.split('\n'):
+        for line in self.intel['ports'].split('\n'):
             elements.append(Paragraph(line.replace(' ', '&nbsp;'), nmap_style))
-            
+
         doc.build(elements)
         return path
-    except: return None
 
-# -------------------- MAIN --------------------
+# -------------------- EXECUÇÃO --------------------
 
 def main():
     os.system('clear')
-    print(f"{C}{B}🛡️ SOC-ARX V9.0 - PERSISTENCE & REPORT EDITION{E}")
-    auto_installer()
-    
-    my_ip, vpn_status = check_vpn()
-    print(f"{B}Sua Conexão: {my_ip} | Status: {vpn_status}{E}\n")
+    print(f"{C}{B}🛡️ SOC-ARX V12 - SUPREME INFORMATION SCANNER{E}")
+    print(f"{Y}O Scanner definitivo para o seu Plano de 5 Anos.{E}\n")
 
-    print(f"{B}SELECIONE O LABORATÓRIO:{E}")
-    for k, v in LABS.items(): print(f"{G}{k}. {v[0]}{E}")
-    
-    choice = input(f"\n{B}❯ SELEÇÃO: {E}").strip()
-    target = LABS[choice][1] if choice in LABS else input(f"{B}❯ TARGET: {E}").strip()
-    
+    target = input(f"{B}❯ Digite o Alvo (URL, IP ou Domínio): {E}").strip()
     if not target: return
 
-    intel = analyze_web_intelligence(f"http://{target}")
-    nmap_res = run_nmap_scan(target)
+    # Início do Ciclo de Inteligência
+    scanner = SOC_ARX_SUPREME(target)
+    scanner.setup_env()
     
-    # Interface de Saída
-    print(f"\n{B}{'='*50}\nRELATÓRIO DE VARREDURA SOC-ARX\n{'='*50}{E}")
-    print(f"{C}Tecnologia Detectada: {intel['tech']}{E}")
-    if intel['telnet']: print(f"{Y}Banner Telnet: {intel['telnet']}{E}")
+    # Rodando módulos
+    scanner.dns_recon()
+    scanner.web_intelligence()
+    scanner.network_audit()
+
+    # Dicas de estudo baseadas no alvo
+    print(f"\n{B}{C}🛠️ ANÁLISE DE VULNERABILIDADES POTENCIAIS:{E}")
+    if "ASP.NET" in scanner.intel['server'] or scanner.intel['asp_tokens']:
+        print(f"{R}[!] Alvo Microsoft detectado. Estudar: SQLi (Auth Bypass) e ViewState Deserialization.{E}")
+    if any("admin" in f for f in scanner.intel['files']):
+        print(f"{G}[+] Área administrativa encontrada. Estudar: Brute Force e Broken Authentication.{E}")
+
+    # Finalização e PDF
+    pdf_path = scanner.save_supreme_report()
+    print(f"\n{G}{B}[✔] SCAN SUPREMO FINALIZADO!{E}")
+    print(f"{C}Relatório Profissional: {pdf_path}{E}")
     
-    xpl_suggester(intel)
-    
-    # Exportação
-    pdf_path = export_pdf(target, nmap_res, intel)
-    if pdf_path: print(f"\n{G}[✔] RELATÓRIO PDF GERADO: {pdf_path}{E}")
-    
-    os.system("history -c") # Limpeza Furtiva
-    print(f"\n{G}[*] Processo finalizado com sucesso.{E}")
+    os.system("history -c")
 
 if __name__ == "__main__":
-    try: main()
-    except KeyboardInterrupt: print("\nEncerrado pelo usuário.")
+    main()
